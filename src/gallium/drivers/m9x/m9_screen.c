@@ -590,6 +590,10 @@ m9_resource_create(struct pipe_screen *pscreen,
          resource->row_span = m9_resource_row_span(templ->width0);
          size = resource->texture.size;
       } else if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE) {
+         /* A widened format has no linear layout of its storage width; its
+          * CPU images keep the format's own texels. */
+         if (m9_format_storage(templ->format) != templ->format)
+            format.cpp = util_format_get_blocksize(templ->format);
          if (m9_mip_layout_init(&resource->mip, templ->width0,
                                 templ->height0, 1, templ->last_level + 1,
                                 format.cpp))

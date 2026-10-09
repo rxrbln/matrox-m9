@@ -802,6 +802,38 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
    return ret;
 }
 
+/* Rows of a tiled target in its pipe format, converted where the storage
+ * is a wider format (m9_format_storage). */
+static int
+m9_surface_rows(struct m9_context *ctx, const struct m9_resource *resource,
+                bool write, const struct pipe_box *box, uint8_t *data,
+                unsigned stride)
+{
+   enum pipe_format format = resource->base.format;
+   enum pipe_format store = m9_format_storage(format);
+   uint32_t op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ;
+   unsigned row = box->width * 4;
+   uint8_t *rows;
+   int ret;
+
+   if (store == format)
+      return m9_surface_access(ctx, resource, op, box, data);
+   rows = MALLOC((size_t)row * box->height);
+   if (!rows)
+      return -ENOMEM;
+   ret = write && !util_format_translate(store, rows, row, 0, 0, format,
+                                         data, stride, 0, 0, box->width,
+                                         box->height) ? -EINVAL : 0;
+   if (!ret)
+      ret = m9_surface_access(ctx, resource, op, box, rows);
+   if (!ret && !write &&
+       !util_format_translate(format, data, stride, 0, 0, store, rows, row,
+                              0, 0, box->width, box->height))
+      ret = -EINVAL;
+   FREE(rows);
+   return ret;
+}
+
 static bool
 m9_depth_windowed(const struct m9_resource *resource)
 {
@@ -1225,14 +1257,15 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
                        !(usage & PIPE_MAP_WRITE));
 
       /* Tiled storage is only reachable as rows through the kernel. */
-      stride = box->width * 4;
+      stride = m9_format_storage(pres->format) != pres->format ?
+               util_format_get_stride(pres->format, box->width) :
+               box->width * 4;
       transfer->staging = box->width && box->height ?
                           MALLOC((size_t)stride * box->height) : NULL;
       if (!transfer->staging ||
           (preserve && (resource->tiled ?
-                        m9_surface_access(ctx, resource,
-                                          PARHELIA_M9_ACCESS_READ, box,
-                                          transfer->staging) :
+                        m9_surface_rows(ctx, resource, false, box,
+                                        transfer->staging, stride) :
                         m9_depth_access(ctx, resource,
                                         PARHELIA_M9_ACCESS_READ, box,
                                         transfer->staging, stride)))) {
@@ -1394,9 +1427,9 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
       FREE(transfer->staging);
    } else if (transfer->staging) {
       if ((ptransfer->usage & PIPE_MAP_WRITE) &&
-          m9_surface_access(m9_context(pctx), m9_res(ptransfer->resource),
-                            PARHELIA_M9_ACCESS_WRITE, &ptransfer->box,
-                            transfer->staging))
+          m9_surface_rows(m9_context(pctx), m9_res(ptransfer->resource),
+                          true, &ptransfer->box, transfer->staging,
+                          ptransfer->stride))
          m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
                       "de-tiled render target write failed");
       FREE(transfer->staging);
@@ -4659,13 +4692,15 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    /* Captured 79=c8210080 FBO textures: ordinary tiled render targets.  The
     * descriptor carries the 32-aligned row span; other widths sample through
     * scaled coordinates (m9_job_textures). */
+   enum pipe_format store = m9_format_storage(res->base.format);
+
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
-       (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-        res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ||
-        res->base.format == PIPE_FORMAT_R10G10B10A2_UNORM ||
-        res->base.format == PIPE_FORMAT_B10G10R10A2_UNORM ||
-        res->base.format == PIPE_FORMAT_R10G10B10X2_UNORM ||
-        res->base.format == PIPE_FORMAT_B10G10R10X2_UNORM)) {
+       (store == PIPE_FORMAT_B8G8R8A8_UNORM ||
+        store == PIPE_FORMAT_B8G8R8X8_UNORM ||
+        store == PIPE_FORMAT_R10G10B10A2_UNORM ||
+        store == PIPE_FORMAT_B10G10R10A2_UNORM ||
+        store == PIPE_FORMAT_R10G10B10X2_UNORM ||
+        store == PIPE_FORMAT_B10G10R10X2_UNORM)) {
       /* The small family is addressed by the 2-D kind, like a small texture:
        * reading it as the ordinary tiled kind returns only the first 16x16
        * texels, which is 1/16 of a 64x64 surface and 1/4 of a 32x32 one. */
@@ -4989,8 +5024,8 @@ m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
    if (blend && blend->logicop_enable) {
       if (blend->logicop_func == PIPE_LOGICOP_COPY)
          return NULL;
-      if (color_format != PIPE_FORMAT_B8G8R8A8_UNORM &&
-          color_format != PIPE_FORMAT_B8G8R8X8_UNORM)
+      if (m9_format_storage(color_format) != PIPE_FORMAT_B8G8R8A8_UNORM &&
+          m9_format_storage(color_format) != PIPE_FORMAT_B8G8R8X8_UNORM)
          return "the logic-op tail is captured for 8-bit targets only; "
                 "draw skipped";
       out->logic = true;
@@ -5500,11 +5535,16 @@ m9_view_swizzle(const struct pipe_sampler_view *view, uint8_t out[4])
                   res->texture_code : 0;
    bool plain = (code == 0xc8 || code == 0xc9 || code == M9_TEXTURE_CODE_BGRA) &&
                 desc && view->format == res->base.format;
+   bool wider = m9_format_storage(view->format) != view->format;
 
    for (unsigned c = 0; c < 4; c++) {
       unsigned src = swz[c] <= PIPE_SWIZZLE_W ? desc->swizzle[swz[c]] : swz[c];
 
-      out[c] = plain && src == desc->swizzle[c] ? PIPE_SWIZZLE_X + c : swz[c];
+      /* A target kept in wider storage returns the storage's channels,
+       * which the format reads as constants (R8 in B8G8R8X8). */
+      out[c] = plain && src == desc->swizzle[c] ? PIPE_SWIZZLE_X + c :
+               wider && (src == PIPE_SWIZZLE_0 || src == PIPE_SWIZZLE_1) ?
+               src : swz[c];
    }
 }
 
@@ -9080,7 +9120,10 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
    if (dst->level || resource->cpp != 4 || !resource->map)
       return;
    m9_context_sync(ctx);
-   util_pack_color(color->f, dst->format, &uc);
+   /* The word the storage holds, which a widened format does not name. */
+   util_pack_color(color->f, resource->texture.levels ?
+                   resource->texture_storage :
+                   m9_format_storage(dst->format), &uc);
    if (ctx->lost || m9_wait_for_object(ctx, resource)) {
       ctx->lost = true;
       return;
@@ -9177,8 +9220,8 @@ m9_resource_samplable(const struct m9_resource *res, unsigned level)
    if (res->kind == M9_RESOURCE_LINEAR_DEPTH && res->format)
       return true;
    return res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
-          (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-           res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM);
+          (m9_format_storage(res->base.format) == PIPE_FORMAT_B8G8R8A8_UNORM ||
+           m9_format_storage(res->base.format) == PIPE_FORMAT_B8G8R8X8_UNORM);
 }
 
 /*

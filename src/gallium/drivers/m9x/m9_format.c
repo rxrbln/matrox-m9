@@ -80,6 +80,16 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
    case PIPE_FORMAT_I8_UNORM:
       info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };
       break;
+   /* The narrow family is luminance and alpha only, with no R8 or R8G8
+    * code (docs/parhelia-m9-implementation-backlog.md).  GL's red and
+    * red-green images keep the 32-bit B8G8R8X8 target storage, are
+    * converted on CPU access (m9_format_storage) and sample their absent
+    * channels as constants. */
+   case PIPE_FORMAT_R8_UNORM:
+   case PIPE_FORMAT_R8G8_UNORM:
+      info = (struct m9_format_info){ 0x66, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
+      break;
    /* Depth surfaces sample as well as store: the descriptor carries the
     * same code in either role (docs/parhelia-m9-openbits-gl-capture.md).
     * Z16 samples but does not store: the depth unit needs the hierarchical
@@ -101,4 +111,18 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
    if (out)
       *out = info;
    return true;
+}
+
+/* The pipe format a render surface's storage holds for an image of the
+ * given format: the format itself unless it is kept in a wider one. */
+enum pipe_format
+m9_format_storage(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_R8_UNORM:
+   case PIPE_FORMAT_R8G8_UNORM:
+      return PIPE_FORMAT_B8G8R8X8_UNORM;
+   default:
+      return format;
+   }
 }

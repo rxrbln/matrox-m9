@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FORMAT_H
 #define M9_FORMAT_H
 
@@ -19,5 +20,6 @@ struct m9_format_info {
 };
 
 bool m9_format_info(enum pipe_format format, struct m9_format_info *out);
+enum pipe_format m9_format_storage(enum pipe_format format);
 
 #endif
