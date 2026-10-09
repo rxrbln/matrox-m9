@@ -885,6 +885,32 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    return ok ? 0 : -EINVAL;
 }
 
+int
+m9_texture_unit_init_lod(struct m9_texture_unit *unit, uint32_t handle,
+                        const struct m9_texture_bind *bind,
+                        const struct pipe_sampler_state *sampler, float lod,
+                        float max_bias)
+{
+   struct pipe_sampler_state pinned;
+
+   /* Pinning settles the mip selection; whether it also controls the
+    * magnification class is not proved, so both image filters must agree.
+    * This is a qualification boundary, not a made-up sampler opcode. */
+   if (!sampler || !isfinite(lod) || !isfinite(max_bias) || max_bias < 0 ||
+       !isfinite(sampler->lod_bias) ||
+       sampler->min_img_filter != sampler->mag_img_filter)
+      return -EINVAL;
+   pinned = *sampler;
+   pinned.min_lod = pinned.max_lod =
+      MIN2(MAX2(lod + CLAMP(sampler->lod_bias, -max_bias, max_bias),
+                 sampler->min_lod), sampler->max_lod);
+   /* textureLod supplies lambda_base, not the bias-adjusted lambda. Fold
+    * the combined sampler bias into the pinned bounds once, after clamping
+    * to the live screen limit; the unit must not apply it a second time. */
+   pinned.lod_bias = 0.0f;
+   return m9_texture_unit_init(unit, handle, bind, &pinned);
+}
+
 /* Captured fs-uniform/fs-color raster unit 0 (m9x-vendor-glsl-programs). */
 void
 m9_texture_unit_placeholder(struct m9_texture_unit *unit, uint32_t handle)

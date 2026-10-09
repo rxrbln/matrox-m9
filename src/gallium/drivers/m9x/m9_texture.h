@@ -113,6 +113,14 @@ struct m9_texture_unit {
    bool placeholder;          /* unsampled unit-0 binding, 82..85 cleared */
 };
 
+/* Opt-in fragment textureLod: matching min/mag image filters and a finite,
+ * draw-constant LOD. The captured 7d bounds pin it relative to the live view.
+ * Sampler bias is applied once before clamping; derivatives do not contribute. */
+int m9_texture_unit_init_lod(struct m9_texture_unit *unit, uint32_t handle,
+                            const struct m9_texture_bind *bind,
+                            const struct pipe_sampler_state *sampler,
+                            float lod, float max_bias);
+
 bool m9_texture_format(enum pipe_format format, struct m9_texture_format *out);
 /* Descriptor code and block size of an S3TC format, false for every other. */
 bool m9_texture_compressed(enum pipe_format format, uint8_t *code,

@@ -992,6 +992,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    int ri = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
    int bi = nir_tex_instr_src_index(tex, nir_tex_src_bias);
+   int li = nir_tex_instr_src_index(tex, nir_tex_src_lod);
 
    /* A cube and a volume read three coordinate components of one varying,
     * exactly where a shadow fetch reads its reference. */
@@ -1002,17 +1003,30 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    bool line = tex->sampler_dim == GLSL_SAMPLER_DIM_1D;
 
    dims = tex->is_shadow || volume ? 3 : line ? 1 : 2;
-   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb) ||
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb &&
+        tex->op != nir_texop_txl) ||
        (tex->op == nir_texop_txb) != (bi >= 0) ||
+       (tex->op == nir_texop_txl) != (li >= 0) ||
        (!sampler_dim_plane(tex->sampler_dim) && !volume && !line) ||
        tex->is_array || ci < 0 || (volume && tex->is_shadow) ||
        tex->is_shadow != (ri >= 0) ||
-       tex->num_srcs != 1u + (pi >= 0) + (ri >= 0) + (bi >= 0))
+       tex->num_srcs != 1u + (pi >= 0) + (ri >= 0) + (bi >= 0) + (li >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   /* A draw-constant LOD can use the captured sampler's min=max bounds.
+    * Keep new coordinate classes separate from the measured 2-D join. */
+   if (li >= 0) {
+      if (!debug_get_bool_option("M9X_FS_LOD", false))
+         return fail(c, "explicit fragment LOD is disabled (M9X_FS_LOD)"), -1;
+      if (tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_shadow || pi >= 0)
+         return fail(c, "explicit fragment LOD needs a plain 2-D coordinate"), -1;
+   }
    /* An earlier pass already handed this coordinate over. */
    for (unsigned i = 0; i < c->cut_count; i++)
-      if (c->cut[i] == tex->src[ci].src.ssa)
+      if (c->cut[i] == tex->src[ci].src.ssa) {
+         if (li >= 0)
+            return fail(c, "explicit fragment LOD has no routed coordinate proof"), -1;
          return build_coord_route(c, tex, i);
+      }
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
     * scalarises IO, so the pair can also be two loads of one location.
     * A shadow fetch adds the comparison reference as a third component of
@@ -1029,6 +1043,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    if (bi >= 0 && (!coord_parse(nir_get_scalar(tex->src[bi].src.ssa, 0), &be) ||
                    be.varying))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   if (li >= 0 && (!coord_parse(nir_get_scalar(tex->src[li].src.ssa, 0), &be) ||
+                   be.varying))
+      return fail(c, "explicit fragment LOD must be constant for the draw"), -1;
    for (unsigned i = 0; i < dims; i++) {
       nir_scalar src = i < 2 || volume ?
                        nir_get_scalar(tex->src[ci].src.ssa, i) :
@@ -1125,7 +1142,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
           p->texcoord_volume[i] == volume &&
           m9_fs_coord_affine_same(&p->texcoord_affine[i], &affine) &&
           p->texcoord_biased[i] == (bi >= 0) &&
-          (bi < 0 || coord_term_same(&p->texcoord_lod_bias[i], &be.bias))) {
+          p->texcoord_explicit_lod[i] == (li >= 0) &&
+          ((bi < 0 && li < 0) ||
+           coord_term_same(&p->texcoord_lod_bias[i], &be.bias))) {
          n = node_new(c, N_TEX);
          if (n < 0)
             return -1;
@@ -1140,7 +1159,8 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       return fail_coord(c, tex->src[ci].src.ssa);
    p->texcoord_affine[p->texture_count] = affine;
    p->texcoord_biased[p->texture_count] = bi >= 0;
-   if (bi >= 0)
+   p->texcoord_explicit_lod[p->texture_count] = li >= 0;
+   if (bi >= 0 || li >= 0)
       p->texcoord_lod_bias[p->texture_count] = be.bias;
    p->texcoord_projective[p->texture_count] = pi >= 0;
    p->texcoord_shadow[p->texture_count] = tex->is_shadow;
@@ -4181,6 +4201,7 @@ assign_texels(struct ctx *c)
    bool projective[M9_FS_MAX_TEXTURES], shadow[M9_FS_MAX_TEXTURES];
    bool volume[M9_FS_MAX_TEXTURES];
    bool biased[M9_FS_MAX_TEXTURES];
+   bool explicit_lod[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_term lod_bias[M9_FS_MAX_TEXTURES];
 
    util_dynarray_foreach(&c->nodes, struct node, n) {
@@ -4227,6 +4248,7 @@ assign_texels(struct ctx *c)
       coord_source[i] = p->texcoord_source[order[i]];
       volume[i] = p->texcoord_volume[order[i]];
       biased[i] = p->texcoord_biased[order[i]];
+      explicit_lod[i] = p->texcoord_explicit_lod[order[i]];
       lod_bias[i] = p->texcoord_lod_bias[order[i]];
       pair_of[order[i]] = i;
    }
@@ -4245,6 +4267,7 @@ assign_texels(struct ctx *c)
    memcpy(p->texcoord_source, coord_source, p->texture_count);
    memcpy(p->texcoord_volume, volume, p->texture_count);
    memcpy(p->texcoord_biased, biased, p->texture_count);
+   memcpy(p->texcoord_explicit_lod, explicit_lod, p->texture_count);
    memcpy(p->texcoord_lod_bias, lod_bias,
           p->texture_count * sizeof(lod_bias[0]));
    util_dynarray_foreach(&c->nodes, struct node, n) {
@@ -5226,6 +5249,7 @@ reset_graph(struct ctx *c)
    p->face = false;
    memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
    memset(p->texcoord_biased, 0, sizeof(p->texcoord_biased));
+   memset(p->texcoord_explicit_lod, 0, sizeof(p->texcoord_explicit_lod));
 }
 
 static bool compile_graph(struct ctx *c, nir_scalar s[4], bool discard);

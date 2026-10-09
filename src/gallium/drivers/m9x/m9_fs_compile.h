@@ -164,9 +164,10 @@ struct m9_fs_program {
     * r coordinate; the unit's form word selects the storage family. */
    bool texcoord_volume[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
-   /* A per-draw constant LOD bias the fetch adds (texture2D's bias
-    * argument); the driver folds it into the unit's sampler bias. */
+   /* A per-draw LOD argument: texture2D's bias, or explicit textureLod.
+    * The flags are exclusive; explicit LOD pins the live sampler bounds. */
    bool texcoord_biased[M9_FS_MAX_TEXTURES];
+   bool texcoord_explicit_lod[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_term texcoord_lod_bias[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */

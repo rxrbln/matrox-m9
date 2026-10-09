@@ -5162,10 +5162,20 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
        * every one of the eight functions (MEASURED, m9-mesa-glsl
        * shadow:FUNC).  The vendor ICD's complemented readback is not what
        * this pipeline stores. */
-      if (!reason && m9_texture_unit_init(&key->units[u],
-                                          m9_res(view->texture)->handle,
-                                          &bind, sampler))
-         reason = "sampler wrap mode is not implemented; draw skipped";
+      if (!reason) {
+         if (p->texcoord_explicit_lod[k]) {
+            if (m9_texture_unit_init_lod(&key->units[u],
+                                        m9_res(view->texture)->handle,
+                                        &bind, sampler,
+                  m9_coord_term(ctx, &p->texcoord_lod_bias[k]),
+                  ctx->screen->base.caps.max_texture_lod_bias))
+               reason = "explicit fragment LOD needs finite draw-constant "
+                        "LOD and matching min/mag filters; draw skipped";
+         } else if (m9_texture_unit_init(&key->units[u],
+                                         m9_res(view->texture)->handle,
+                                         &bind, sampler))
+            reason = "sampler wrap mode is not implemented; draw skipped";
+      }
       if (reason) {
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
          return m9_skip_reason(ctx, reason);
