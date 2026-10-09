@@ -189,6 +189,8 @@ struct m9_vertex_decl {
    uint32_t words[4];
 };
 
+int m9_draw_params_depth(struct m9_draw_params *params, uint32_t width,
+                         uint32_t height);
 int m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                         uint32_t height, uint8_t color_format);
 /* The b1 descriptor of one colour attachment of this extent and format. */

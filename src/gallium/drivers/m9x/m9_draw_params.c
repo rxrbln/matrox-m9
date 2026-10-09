@@ -87,6 +87,29 @@ m9_depth_row_span(uint32_t width, uint32_t height)
    return (width + 63) & ~63u;
 }
 
+/* Depth and HZ rows are addressed in the depth surface's own span, so a
+ * depth attachment larger than the colour target takes its own descriptors. */
+int
+m9_draw_params_depth(struct m9_draw_params *params, uint32_t width,
+                     uint32_t height)
+{
+   struct m9_surface_desc desc = {
+      .height = height, .layers = 1, .layout = 1,
+      .format = M9_DEPTH_FORMAT_D24S8,
+   };
+   struct m9_render_layout layout;
+
+   if (!m9_depth_surface_layout(width, height, &layout))
+      return -EINVAL;
+   desc.row_span = m9_depth_row_span(width, height);
+   desc.address_offset = !layout.small;
+   params->depth_desc = m9_surface_desc0(&desc);
+   desc.format = M9_HZ_FORMAT;
+   desc.address_offset = false;
+   params->aux_desc = m9_surface_desc0(&desc);
+   return 0;
+}
+
 int
 m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                     uint32_t height, uint8_t color_format)
@@ -110,12 +133,7 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    desc.row_span = layout.row_span;
    desc.address_offset = !layout.small;
    params->color_desc = color_desc;
-   desc.format = M9_DEPTH_FORMAT_D24S8;
-   desc.row_span = m9_depth_row_span(width, height);
-   params->depth_desc = m9_surface_desc0(&desc);
-   desc.format = M9_HZ_FORMAT;
-   desc.address_offset = false;
-   params->aux_desc = m9_surface_desc0(&desc);
+   m9_draw_params_depth(params, width, height);
    params->clip_min = 0;
    params->clip_max = width | height << 16;
 

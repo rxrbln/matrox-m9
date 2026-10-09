@@ -329,6 +329,13 @@ m9_depth_surface_layout(uint32_t width, uint32_t height,
                                    layout);
 }
 
+struct m9_proxy {
+   struct pipe_resource *tex, *scratch;
+   unsigned level, layer;
+   uint64_t generation;  /* of tex when the proxy last matched it */
+   bool bound, busy;
+};
+
 struct m9_screen {
    struct pipe_screen base;
    int fd;
@@ -739,6 +746,9 @@ struct m9_context {
    struct m9_resource *target_depth, *target_aux, *target_be;
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    struct m9_target_depth *target_entry;  /* the one bound, for its be pair */
+   /* The framebuffer's depth attachment when the engine can bind it: level
+    * 0 of a D24S8 surface covering the render area. */
+   struct m9_resource *target_zs;
    struct m9_be_shape be_shape;       /* of ctx->be, when no entry owns one */
    uint64_t be_clock;                /* stamps the back-end slot each job binds */
    uint64_t be_extra_bytes;          /* objects beyond each target's pair */
@@ -770,14 +780,9 @@ struct m9_context {
    uint64_t scratch_clock;
    bool in_scratch;
    bool scratch_bind;   /* the target being bound is a scratch surface */
-   /* A colour level the engine cannot render in place renders into a tiled
-    * proxy that is seeded from and written back to that level of `tex`. */
-   struct {
-      struct pipe_resource *tex, *scratch;
-      unsigned level, layer;
-      uint64_t generation;  /* of tex when the proxy last matched it */
-      bool bound, busy;
-   } proxy;
+   /* A colour or depth level the engine cannot render in place renders into
+    * a proxy surface seeded from and written back to that level of `tex`. */
+   struct m9_proxy proxy, zs_proxy;
    struct util_dynarray records;  /* float source records */
    struct util_dynarray indices;  /* uint16 raster indices into records */
    struct util_dynarray draws;    /* struct m9_draw_record */

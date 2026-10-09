@@ -1589,6 +1589,10 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
     * stay unadvertised until their GL path is qualified separately. */
    caps->draw_indirect = true;
    caps->npot_textures = true;
+   /* ARB_framebuffer_object: the clip window limits rendering to the
+    * intersection of the attachments, and every colour, depth and HZ surface
+    * is addressed through a descriptor of its own extent (m9_update_target). */
+   caps->mixed_framebuffer_sizes = true;
    /* Rectangle targets: unnormalized coordinates reach the driver, which
     * folds the reciprocal of the sampled span into them per vertex
     * (m9_job_textures).  The engine itself normalizes over the descriptor
