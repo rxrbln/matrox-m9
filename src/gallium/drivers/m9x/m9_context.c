@@ -6294,75 +6294,129 @@ m9_topology_group(enum m9_topology topology)
    }
 }
 
-/* Projective coordinates are divided per vertex: exact while q is constant
- * over a primitive, which m9_proj_constant checks before the job is built.
- * Render-target coordinates address the aligned span. */
-static void
-m9_scale_coords(const struct m9_job_key *key, float *extra)
+enum m9_coord_op_flags {
+   M9_COORD_SWIZZLE = BITFIELD_BIT(0),
+   M9_COORD_PAIR = BITFIELD_BIT(1),
+   M9_COORD_AFFINE = BITFIELD_BIT(2),
+   M9_COORD_PROJECTIVE = BITFIELD_BIT(3),
+   M9_COORD_THREE_COMPONENTS = BITFIELD_BIT(4),
+   M9_COORD_UNIT_SCALE = BITFIELD_BIT(5),
+};
+
+struct m9_coord_op {
+   unsigned j, flags, components;
+   uint8_t comp[4], affine_components;
+   const float *scale, *bias, *unit_scale;
+};
+
+/* Slot routing and the once-per-stream decisions depend on the job key,
+ * not its vertices.  Preserve slot order: a later slot can add a transform
+ * to a shared stream after an earlier slot already scaled it.  The plan's
+ * coefficient pointers belong to the caller's immutable key and are used
+ * only while that append is running. */
+static unsigned
+m9_coord_plan(const struct m9_job_key *key,
+              struct m9_coord_op out[M9_DRAW_MAX_UNITS])
 {
    const struct m9_fs_variant *v = key->variant;
-   uint32_t divided = 0, folded = 0, scaled = 0;
+   uint32_t divided = 0, folded = 0, scaled = 0, packed = 0;
+   unsigned count = 0;
 
-   uint32_t packed = 0;
-
-   for (unsigned u = 0; u < v->slot_count; u++) {
+   for (unsigned u = 0; v && u < v->slot_count; u++) {
       const struct m9_fs_program *p = &v->passes.pass[v->slot_pass[u]];
       const struct m9_fs_pass_streams *st = &v->stream[v->slot_pass[u]];
       unsigned k = v->slot_index[u];
       unsigned coord = st->texture_coord[k];
       int j = coord == M9_RASTER_COORD_NONE ? -1 : st->coord_extra[coord];
       unsigned c = p->texcoord_components[k];
+      struct m9_coord_op op = {0};
 
       if (j < 0)
          continue;
-      /* Components in another order are gathered from the vertex. */
+      op.j = j;
       if (p->texcoord_affine[k].swizzled && !(packed & BITFIELD_BIT(j))) {
-         float v[4];
-
-         for (unsigned i = 0; i < 4; i++)
-            v[i] = extra[4 * j + p->texcoord_affine[k].comp[i]];
-         memcpy(extra + 4 * j, v, sizeof(v));
+         op.flags |= M9_COORD_SWIZZLE;
+         memcpy(op.comp, p->texcoord_affine[k].comp, sizeof(op.comp));
          packed |= BITFIELD_BIT(j);
       }
-      /* A stream carries one pair; anything but the low one is moved down,
-       * since the program reads its coordinate attribute as xy. */
       if (c && !(packed & BITFIELD_BIT(j))) {
-         extra[4 * j] = extra[4 * j + c];
-         extra[4 * j + 1] = extra[4 * j + c + 1];
+         op.flags |= M9_COORD_PAIR;
+         op.components = c;
          packed |= BITFIELD_BIT(j);
       }
       if (p->texcoord_affine[k].present && !(folded & BITFIELD_BIT(j))) {
-         unsigned n = p->texcoord_shadow[k] || p->texcoord_volume[k] ? 3 : 2;
-
-         for (unsigned i = 0; i < 4; i++) {
-            /* A constant term ignores the stream, whatever it holds. */
-            if (i >= n && (i < 3 || !p->texcoord_projective[k]))
-               continue;
-            extra[4 * j + i] = key->coord_scale[u][i] == 0.0f ?
-                               key->coord_bias[u][i] :
-                               extra[4 * j + i] * key->coord_scale[u][i] +
-                               key->coord_bias[u][i];
-         }
+         op.flags |= M9_COORD_AFFINE;
+         op.affine_components = p->texcoord_shadow[k] || p->texcoord_volume[k] ?
+                                7 : 3;
+         if (p->texcoord_projective[k])
+            op.affine_components |= BITFIELD_BIT(3);
+         op.scale = key->coord_scale[u];
+         op.bias = key->coord_bias[u];
          folded |= BITFIELD_BIT(j);
       }
       if (p->texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
-         float q = extra[4 * j + 3];
-
-         if (q != 0.0f && q != 1.0f) {
-            extra[4 * j] /= q;
-            extra[4 * j + 1] /= q;
-            if (p->texcoord_shadow[k] || p->texcoord_volume[k])
-               extra[4 * j + 2] /= q;
-            extra[4 * j + 3] = 1.0f;
-         }
+         op.flags |= M9_COORD_PROJECTIVE;
+         if (p->texcoord_shadow[k] || p->texcoord_volume[k])
+            op.flags |= M9_COORD_THREE_COMPONENTS;
          divided |= BITFIELD_BIT(j);
       }
-      /* The stream is shared, so its scale is applied once like every other
-       * step here: two units on one coordinate scaled it twice. */
       if (!(scaled & BITFIELD_BIT(j))) {
-         extra[4 * j] *= key->unit_scale[u][0];
-         extra[4 * j + 1] *= key->unit_scale[u][1];
+         op.flags |= M9_COORD_UNIT_SCALE;
+         op.unit_scale = key->unit_scale[u];
          scaled |= BITFIELD_BIT(j);
+      }
+      if (op.flags)
+         out[count++] = op;
+   }
+   return count;
+}
+
+/* Projective coordinates are divided per vertex: exact while q is constant
+ * over a primitive, which m9_proj_constant checks before the job is built.
+ * Render-target coordinates address the aligned span. */
+static void
+m9_scale_coords(const struct m9_coord_op *plan, unsigned count, float *extra)
+{
+   for (unsigned u = 0; u < count; u++) {
+      const struct m9_coord_op *op = &plan[u];
+      float *dst = extra + 4 * op->j;
+
+      if (op->flags & M9_COORD_SWIZZLE) {
+         float v[4];
+
+         for (unsigned i = 0; i < 4; i++)
+            v[i] = dst[op->comp[i]];
+         memcpy(dst, v, sizeof(v));
+      }
+      /* A stream carries one pair; anything but the low one is moved down,
+       * since the program reads its coordinate attribute as xy. */
+      if (op->flags & M9_COORD_PAIR) {
+         dst[0] = dst[op->components];
+         dst[1] = dst[op->components + 1];
+      }
+      if (op->flags & M9_COORD_AFFINE) {
+         for (unsigned i = 0; i < 4; i++) {
+            /* A constant term ignores the stream, whatever it holds. */
+            if (!(op->affine_components & BITFIELD_BIT(i)))
+               continue;
+            dst[i] = op->scale[i] == 0.0f ? op->bias[i] :
+                     dst[i] * op->scale[i] + op->bias[i];
+         }
+      }
+      if (op->flags & M9_COORD_PROJECTIVE) {
+         float q = dst[3];
+
+         if (q != 0.0f && q != 1.0f) {
+            dst[0] /= q;
+            dst[1] /= q;
+            if (op->flags & M9_COORD_THREE_COMPONENTS)
+               dst[2] /= q;
+            dst[3] = 1.0f;
+         }
+      }
+      if (op->flags & M9_COORD_UNIT_SCALE) {
+         dst[0] *= op->unit_scale[0];
+         dst[1] *= op->unit_scale[1];
       }
    }
 }
@@ -6471,6 +6525,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
 {
    struct m9_context *ctx = r->ctx;
    const unsigned max = m9_job_max_vertices(key);
+   struct m9_coord_op coord_plan[M9_DRAW_MAX_UNITS];
+   unsigned coord_count = r->extra_count ? m9_coord_plan(key, coord_plan) : 0;
    /* A list splits only on a whole primitive. */
    unsigned grain = topology == M9_TOPOLOGY_TRIANGLES ? 3 :
                     topology == M9_TOPOLOGY_LINES ? 2 : count;
@@ -6528,7 +6584,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
             return;
          }
          for (unsigned v = 0; extra && v < grain; v++)
-            m9_scale_coords(key, extra + v * 4 * r->extra_count);
+            m9_scale_coords(coord_plan, coord_count,
+                         extra + v * 4 * r->extra_count);
          for (unsigned i = grain; i < grain + (grain & 1) + M9_INDEX_TAIL; i++)
             words[i] = words[grain - 1];
          m9_job_commit(ctx, out, extra, grain, first, index_first, grain,
@@ -6570,7 +6627,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
          return;
       }
       for (unsigned v = 0; extra && v < vertices; v++)
-         m9_scale_coords(key, extra + v * 4 * r->extra_count);
+         m9_scale_coords(coord_plan, coord_count,
+                         extra + v * 4 * r->extra_count);
       for (unsigned i = 0; i < n; i++)
          words[i] = first +
                     m9_index_at(indices, index_size, done + i) - lo;
@@ -6592,6 +6650,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                  unsigned count)
 {
    const unsigned max = m9_job_max_vertices(key);
+   struct m9_coord_op coord_plan[M9_DRAW_MAX_UNITS];
+   unsigned coord_count;
    bool list = topology == M9_TOPOLOGY_LINES ||
                topology == M9_TOPOLOGY_TRIANGLES;
    /* A list splits only on a whole primitive: the ceiling is a multiple of
@@ -6611,6 +6671,7 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                      "holds; draws skipped");
       return;
    }
+   coord_count = r->extra_count ? m9_coord_plan(key, coord_plan) : 0;
    for (unsigned done = 0; done < count;) {
       unsigned n = MIN2(count - done, max / grain * grain);
       uint32_t first;
@@ -6642,7 +6703,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
          return;
       }
       for (unsigned i = 0; extra && i < n; i++)
-         m9_scale_coords(key, extra + i * 4 * r->extra_count);
+         m9_scale_coords(coord_plan, coord_count,
+                         extra + i * 4 * r->extra_count);
       m9_job_commit(r->ctx, out, extra, n, first, 0, 0, topology, cull, lines,
                     r->ctx->rasterizer && r->ctx->rasterizer->flatshade);
       done += n;
