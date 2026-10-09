@@ -13,6 +13,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "util/macros.h"
@@ -1063,6 +1064,8 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    uint32_t pass_decl[5], record_bytes;
    const uint32_t *decl;
    unsigned decl_count, const_pairs;
+   unsigned failed_pass = 0;
+   const char *failed_stage = "preprocessing";
    int ret;
 
    if (!batch || !job || batch->sealed || !m9_draw_job_valid(job))
@@ -1084,6 +1087,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
                                        M9_VS_CONST_PAIRS;
    m9_batch_checkpoint(batch, &checkpoint);
    for (unsigned pi = 0, n = MAX2(job->pass_count, 1u); pi < n; pi++) {
+      failed_pass = pi;
       /* The raster stage drains what preprocessing produced, so a pass
        * that runs again preprocesses again; a single-pass job emits
        * exactly the captured stream. */
@@ -1100,6 +1104,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
           * pass: the appended tail owns three of the four output targets
           * and scratches the register behind the fourth. */
          if (job->vs_producer_entry) {
+            failed_stage = "primary preprocessing";
             ret = m9_emit_preprocess(batch, job, decl, decl_count,
                                      record_bytes, const_pairs, base,
                                      M9_PRE_PRIMARY);
@@ -1107,17 +1112,21 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
                goto fail;
          }
          if (job->vs_extra_entry) {
+            failed_stage = "head preprocessing";
             unsigned first = job->vs_producer_entry ? 0x20u : 0;
             ret = m9_emit_preprocess(batch, job, decl, decl_count,
                                      record_bytes, const_pairs, base + first,
                                      M9_PRE_HEAD);
-            if (!ret && job->vs_gather_entry)
+            if (!ret && job->vs_gather_entry) {
+               failed_stage = "gather preprocessing";
                ret = m9_emit_preprocess(batch, job, decl, decl_count,
                                         record_bytes, const_pairs,
                                         base + first + 0x20, M9_PRE_GATHER);
+            }
             if (ret)
                goto fail;
          }
+         failed_stage = "fused preprocessing";
          ret = m9_emit_preprocess(batch, job, decl, decl_count, record_bytes,
                                   const_pairs,
                                   base + m9_extra_dependency(job),
@@ -1125,6 +1134,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
          if (ret)
             goto fail;
       }
+      failed_stage = "raster";
       ret = m9_emit_raster_range(batch, job,
                                  job->pass_count ? &job->passes[pi] : NULL,
                                  pi, !brk);
@@ -1133,6 +1143,17 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    }
    return 0;
 fail:
+   if (ret == -ENOSPC)
+      fprintf(stderr, "m9x: job capacity at %s pass %u/%u before rollback: "
+              "words %u/%u relocs %u/%u bos %u/%u records %u draws %u "
+              "VS runs %u producer %#x extra %#x gather %#x "
+              "preprocess-per-pass %d\n", failed_stage, failed_pass,
+              MAX2(job->pass_count, 1u), batch->command_count,
+              M9_MAX_COMMAND_DWORDS, batch->reloc_count, M9_MAX_RELOCS,
+              batch->bo_count, M9_MAX_BOS, job->source_vertices,
+              job->draw_count, job->vs_const_run_count,
+              job->vs_producer_entry, job->vs_extra_entry,
+              job->vs_gather_entry, job->preprocess_per_pass);
    m9_batch_rollback(batch, &checkpoint);
    return ret;
 }

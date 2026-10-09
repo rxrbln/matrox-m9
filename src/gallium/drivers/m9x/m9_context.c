@@ -3487,6 +3487,7 @@ m9_submit_job_one(struct m9_context *ctx)
    bool faa_store_locked = false;
    bool aggregate_job = false, deferred_submit = false;
    bool gpu_padding = false;
+   const char *build_stage = "source arena";
    int ret;
 
    /* An empty job's key may name a shader or variant deleted since the
@@ -3720,14 +3721,17 @@ m9_submit_job_one(struct m9_context *ctx)
          m9_arena_reserve(ctx, &ctx->source,
                           (uint64_t)records * copies * ctx->record_floats *
                           sizeof(float));
-   if (!ret && ctx->indices.size)
+   if (!ret && ctx->indices.size) {
+      build_stage = "index arena";
       ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size * copies);
+   }
    /* The CPU stream views are reserved for the varyings this job actually
     * gathers, so the job's record ceiling costs system memory only where a
     * fragment program reads them. */
    if (!ret && cpu_view_bytes) {
       uint64_t bytes = (uint64_t)key->variant->extra_count * cpu_view_bytes;
 
+      build_stage = "CPU varying arena";
       ret = m9_cpu_streams_select(ctx);
       if (!ret)
          ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
@@ -3846,6 +3850,7 @@ m9_submit_job_one(struct m9_context *ctx)
             m9_skip_reason(ctx, why);
             ret = -EINVAL;
          } else {
+            build_stage = "native raster state";
             ret = m9_job_native(ctx, key, records,
                                 index_count * sizeof(uint16_t), cpu_view_bytes,
                                 passes);
@@ -4034,17 +4039,22 @@ m9_submit_job_one(struct m9_context *ctx)
          ret = -EINVAL;
       /* A query's snapshot records bracket this job's draws inside its own
        * stream, where the closing one can wait for them to retire. */
-      if (!ret)
+      if (!ret) {
+         build_stage = "query prologue";
          ret = m9_query_job_prologue(ctx, &ctx->batch);
+      }
       if (!ret) {
          uint64_t t_batch = m9_prof_begin();
 
+         build_stage = "draw emitter";
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
          m9_prof_end(M9_PROF_BATCH, t_batch);
       }
-      if (!ret)
+      if (!ret) {
+         build_stage = "query epilogue";
          ret = m9_query_job_epilogue(ctx, &ctx->batch,
                                      m9_draw_job_final_dependency(&job));
+      }
    }
    built = !ret;
    if (!ret) {
@@ -4151,6 +4161,16 @@ m9_submit_job_one(struct m9_context *ctx)
                  index_count, (unsigned)index_base, first_draw->index_first,
                  first_draw->index_count);
    } else if (ret) {
+      if (ret == -ENOSPC && !built)
+         fprintf(stderr, "m9x: job build capacity at %s: words %u/%u "
+                 "relocs %u/%u bos %u/%u records %u draws %u copies %u "
+                 "VS runs %u native VS %d CPU view-bytes %u\n",
+                 build_stage, ctx->batch.command_count,
+                 M9_MAX_COMMAND_DWORDS, ctx->batch.reloc_count, M9_MAX_RELOCS,
+                 ctx->batch.bo_count, M9_MAX_BOS, records, draws, copies,
+                 (unsigned)util_dynarray_num_elements(&ctx->job_vs_runs,
+                                                      struct m9_vs_const_run),
+                 !!key->vs, cpu_view_bytes);
       if (built && ctx->batch.sealed && !aggregate_job)
          m9_dump_job(ctx, fs ? key->variant : NULL, &job, true);
       if (!ctx->lost) {
