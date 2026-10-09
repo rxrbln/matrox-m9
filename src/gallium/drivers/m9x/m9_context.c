@@ -11339,19 +11339,22 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
    source.info = info;
    source.draw = draw;
    source.fs = ctx->fs->nir;
-   struct m9_faa_fragment_state fragment=source.state.fragment;
-   source.state = (struct m9_faa_application_state){
-      .width = ctx->framebuffer_width, .height = ctx->framebuffer_height,
-      .viewport = ctx->viewport, .scissor = ctx->scissor,
-      /* A scissor covering the whole target clips nothing (Quake3 always
-       * enables one). */
-      .scissor_enabled = r->scissor && !m9_scissor_full(ctx, &ctx->scissor),
-      .depth_enabled = z->depth_enabled,
-      .depth_write = z->depth_writemask, .depth_func = z->depth_func,
-      .cull_face = r->cull_face, .front_ccw = r->front_ccw,
-      .flatshade = r->flatshade, .flatshade_first = r->flatshade_first,
-      .fragment = fragment,
-   };
+   /* Keep the fragment-family validity, colour mask and alpha ownership
+    * derived above: replacing the aggregate here lost those live effects. */
+   source.state.width = ctx->framebuffer_width;
+   source.state.height = ctx->framebuffer_height;
+   source.state.viewport = ctx->viewport;
+   source.state.scissor = ctx->scissor;
+   /* A scissor covering the whole target clips nothing (Quake3 always
+    * enables one). */
+   source.state.scissor_enabled = r->scissor && !m9_scissor_full(ctx, &ctx->scissor);
+   source.state.depth_enabled = z->depth_enabled;
+   source.state.depth_write = z->depth_writemask;
+   source.state.depth_func = z->depth_func;
+   source.state.cull_face = r->cull_face;
+   source.state.front_ccw = r->front_ccw;
+   source.state.flatshade = r->flatshade;
+   source.state.flatshade_first = r->flatshade_first;
    for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
       if (i >= PIPE_MAX_ATTRIBS) goto fail;
       const struct pipe_vertex_buffer *b = &ctx->vertex_buffers[i];
