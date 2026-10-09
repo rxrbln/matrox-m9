@@ -5275,13 +5275,29 @@ m9_logic_tail(const struct pipe_blend_state *blend)
           blend->logicop_func != PIPE_LOGICOP_COPY;
 }
 
+/* The bound colour targets that store sRGB. */
+static unsigned
+m9_srgb_targets(const struct m9_context *ctx)
+{
+   unsigned mask = 0;
+
+   for (unsigned p = 0; p < MAX2(ctx->color_count, 1u); p++)
+      if (util_format_is_srgb(ctx->framebuffer.cbufs[p].format))
+         mask |= BITFIELD_BIT(p);
+   return mask;
+}
+
 /* The line raster class with a destination read is not captured: blended
  * lines drawn natively kept only the last of overlapping draws (MEASURED),
- * so lines that blend or apply a logic op are drawn as quads. */
+ * so lines that blend or apply a logic op are drawn as quads, and so are
+ * lines into an sRGB target, whose encode needs the native program. */
 static bool
-m9_line_quads(const struct pipe_blend_state *blend)
+m9_line_quads(const struct m9_context *ctx)
 {
-   return m9_logic_tail(blend) || (blend && blend->rt[0].blend_enable);
+   const struct pipe_blend_state *blend = ctx->blend;
+
+   return m9_logic_tail(blend) || (blend && blend->rt[0].blend_enable) ||
+          m9_srgb_targets(ctx);
 }
 
 /* Blend state as lowered factors and the channels the draw writes, or the
@@ -5299,7 +5315,9 @@ m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
 
    /* GL's logic op replaces blending; COPY is the plain write. */
    if (blend && blend->logicop_enable) {
-      if (blend->logicop_func == PIPE_LOGICOP_COPY)
+      /* GL applies no logic op, and no blend, to an sRGB target. */
+      if (blend->logicop_func == PIPE_LOGICOP_COPY ||
+          util_format_is_srgb(color_format))
          return NULL;
       if (m9_format_storage(color_format) != PIPE_FORMAT_B8G8R8A8_UNORM &&
           m9_format_storage(color_format) != PIPE_FORMAT_B8G8R8X8_UNORM)
@@ -5864,7 +5882,7 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
                           cf);
    if (*reason)
       return NULL;
-   want.blend.srgb = util_format_is_srgb(cf);
+   want.blend.srgb = m9_srgb_targets(ctx);
    want.inline_count = m9_inline_count(ctx->fs_inline_owner,
                                        ctx->fs_inline_count, ctx->fs,
                                        ctx->fs->nir->info.num_inlinable_uniforms);
@@ -5913,8 +5931,7 @@ m9_fs_use_native(struct m9_context *ctx)
       return fs && fs->native;
    /* Blended and logic-op lines are drawn as quads (m9_render_line_quads),
     * so they take the native tail as triangles do. */
-   if (!util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
-       !m9_logic_tail(ctx->blend) &&
+   if (!m9_srgb_targets(ctx) && !m9_logic_tail(ctx->blend) &&
        (!ctx->blend || !ctx->blend->rt[0].blend_enable))
       return false;
    if (!fs->native_tried) {
@@ -5992,15 +6009,10 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
    key->no_dither = !m9_dither_draw(ctx);
-   if (util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
-       (ctx->color_count != 1 || ctx->lines || !m9_fs_use_native(ctx)))
-      return m9_skip_reason(ctx, "sRGB RT0 needs a native single-target "
-                                  "triangle fragment program; draw skipped");
-   for (unsigned p = 1; p < ctx->color_count; p++) {
-      if (util_format_is_srgb(ctx->framebuffer.cbufs[p].format))
-         return m9_skip_reason(ctx, "sRGB rendering past RT0 is not "
-                                     "lowered; draw skipped");
-   }
+   /* Lines into an sRGB target are drawn as quads (m9_line_quads). */
+   if (m9_srgb_targets(ctx) && !m9_fs_use_native(ctx))
+      return m9_skip_reason(ctx, "an sRGB target needs a native fragment "
+                                 "program to encode; draw skipped");
    if (m9_fs_use_native(ctx)) {
       const char *reason;
 
@@ -6912,7 +6924,7 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
       return;
    }
    if (u_reduced_prim(prim) == MESA_PRIM_LINES &&
-       m9_line_quads(ctx->blend)) {
+       m9_line_quads(ctx)) {
       m9_render_line_quads(r, &key, indices, start, count);
       m9_prof_end(M9_PROF_EMIT, t_emit);
       return;
@@ -7371,7 +7383,7 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
        (rast->line_width > 1.0f || rast->line_smooth ||
         rast->line_stipple_enable))
       return "wide, smooth or stippled lines run through the draw module";
-   if (out->lines && m9_line_quads(ctx->blend))
+   if (out->lines && m9_line_quads(ctx))
       return "blended and logic-op lines are drawn as quads through the "
              "draw module";
    out->buffer_count = ctx->num_vertex_buffers;
@@ -9684,6 +9696,7 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
 {
    struct m9_context *ctx = m9_context(pctx);
    struct m9_resource *resource = m9_res(dst->texture);
+   enum pipe_format store;
    union util_color uc;
 
    if (!width || !height)
@@ -9696,10 +9709,14 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
    if (dst->level || resource->cpp != 4 || !resource->map)
       return;
    m9_context_sync(ctx);
-   /* The word the storage holds, which a widened format does not name. */
-   util_pack_color(color->f, resource->texture.levels ?
-                   resource->texture_storage :
-                   m9_format_storage(dst->format), &uc);
+   /* The word the storage holds, which a widened format does not name; an
+    * sRGB surface stores the colour encoded. */
+   store = resource->texture.levels ? resource->texture_storage :
+                                      m9_format_storage(dst->format);
+   if (util_format_is_srgb(dst->format) && !util_format_is_srgb(store) &&
+       util_format_srgb(store) != PIPE_FORMAT_NONE)
+      store = util_format_srgb(store);
+   util_pack_color(color->f, store, &uc);
    if (ctx->lost || m9_wait_for_object(ctx, resource)) {
       ctx->lost = true;
       return;

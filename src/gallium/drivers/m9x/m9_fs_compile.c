@@ -137,6 +137,7 @@ struct node {
    unsigned k;          /* varying slot, or a uniform load's first component */
    unsigned texel;      /* texel register of the xy lane */
    unsigned ubo_slot;
+   bool blend_color;    /* N_UBO standing for the blend colour, not a slot */
    float lit[4];
    bool neg;            /* ADD with a negated literal */
    bool emitted;        /* already placed by the depth-first schedule */
@@ -645,6 +646,13 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       set_src(&NODES(c)[n], 0, a, lane_id, swz_id);
       return n;
    }
+   /* The blend colour, resolved at draw time like the blend tail's. */
+   case nir_intrinsic_load_blend_const_color_rgba:
+      n = node_new(c, N_UBO);
+      if (n < 0)
+         return -1;
+      NODES(c)[n].blend_color = true;
+      return n;
    case nir_intrinsic_load_output:
       if (!nir_intrinsic_io_semantics(intr).fb_fetch_output)
          return fail(c, "unsupported fragment output read"), -1;
@@ -2427,12 +2435,15 @@ lop_add(struct ctx *c, const struct lop *l)
         l->kind == L_MAX_RC) && l->konst >= 0 && l->kswz != 1 &&
        KEYS(c)[l->konst].pair &&
        (KEYS(c)[l->konst].kind == M9_FS_CONST_UNIFORM ||
+        KEYS(c)[l->konst].kind == M9_FS_CONST_BLEND_COLOR ||
         KEYS(c)[l->konst].kind == M9_FS_CONST_LITERAL)) {
       struct kkey k = KEYS(c)[l->konst];
+      enum m9_fs_const_kind kind = k.kind;
       unsigned s0 = (l->kswz >> 1) & 1, s1 = l->kswz & 1;
 
-      k = k.kind == M9_FS_CONST_UNIFORM ? key_uniform(k.off[s0], k.off[s1]) :
-                                          key_literal(k.v[s0], k.v[s1]);
+      k = kind != M9_FS_CONST_LITERAL ? key_uniform(k.off[s0], k.off[s1]) :
+                                        key_literal(k.v[s0], k.v[s1]);
+      k.kind = kind;
       added->konst = key_add(c, &k);
       added->kswz = 1;
    }
@@ -2442,6 +2453,12 @@ lop_add(struct ctx *c, const struct lop *l)
 static struct kkey
 node_key(const struct node *s, unsigned lane)
 {
+   if (s->kind == N_UBO && s->blend_color) {
+      struct kkey k = key_uniform(2 * lane, 2 * lane + 1);
+
+      k.kind = M9_FS_CONST_BLEND_COLOR;
+      return k;
+   }
    if (s->kind == N_UBO)
       return key_uniform((s->ubo_slot * 4 + s->k + 2 * lane) * 4,
                          (s->ubo_slot * 4 + s->k + 2 * lane + 1) * 4);
@@ -5608,6 +5625,7 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
          case nir_intrinsic_load_barycentric_centroid:
          case nir_intrinsic_load_ubo_vec4:
          case nir_intrinsic_load_output:
+         case nir_intrinsic_load_blend_const_color_rgba:
             break;
          case nir_intrinsic_load_input:
          case nir_intrinsic_ddx:
@@ -6041,14 +6059,15 @@ srgb_encode(nir_builder *b, nir_def *x)
 static bool
 srgb_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   unsigned location;
+   unsigned targets = *(const unsigned *)data, location, t;
    nir_def *v;
 
-   (void)data;
    if (intr->intrinsic != nir_intrinsic_store_output)
       return false;
    location = nir_intrinsic_io_semantics(intr).location;
-   if ((location != FRAG_RESULT_COLOR && location != FRAG_RESULT_DATA0) ||
+   t = location == FRAG_RESULT_COLOR ? 0 : location - FRAG_RESULT_DATA0;
+   if ((location != FRAG_RESULT_COLOR && location < FRAG_RESULT_DATA0) ||
+       t >= 8 || !(targets & BITFIELD_BIT(t)) ||
        intr->src[0].ssa->num_components != 4)
       return false;
    b->cursor = nir_before_instr(&intr->instr);
@@ -6068,10 +6087,12 @@ static bool
 fragcolor_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    unsigned targets = *(const unsigned *)data;
-   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+   nir_io_semantics sem;
 
-   if (intr->intrinsic != nir_intrinsic_store_output ||
-       sem.location != FRAG_RESULT_COLOR)
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   sem = nir_intrinsic_io_semantics(intr);
+   if (sem.location != FRAG_RESULT_COLOR)
       return false;
    b->cursor = nir_after_instr(&intr->instr);
    for (unsigned p = 1; p < targets; p++) {
@@ -6183,10 +6204,10 @@ m9_fs_lower_frag_zw(nir_shader *nir)
 }
 
 void
-m9_fs_lower_srgb(nir_shader *nir)
+m9_fs_lower_srgb(nir_shader *nir, unsigned targets)
 {
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, srgb_store,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, &targets);
 }
 
 /* sRGB texel decode
@@ -6261,6 +6282,19 @@ srgb_dst(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* A factor of one becomes fcanonicalize (nir_lower_blend, the algebraic
+ * pass); the engine has no denormals to flush, so it is the value itself. */
+static bool
+fs_drop_canonicalize(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   (void)data;
+   if (alu->op != nir_op_fcanonicalize)
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   nir_def_replace(&alu->def, nir_ssa_for_alu_src(b, alu, 0));
+   return true;
+}
+
 static const enum pipe_blendfactor fs_pipe_factor[] = {
    [M9_FS_ZERO] = PIPE_BLENDFACTOR_ZERO,
    [M9_FS_ONE] = PIPE_BLENDFACTOR_ONE,
@@ -6287,27 +6321,6 @@ static const enum pipe_blend_func fs_pipe_func[] = {
    [M9_FS_FUNC_MAX] = PIPE_BLEND_MAX,
 };
 
-static bool
-fs_const_factor(unsigned f)
-{
-   return f >= M9_FS_CONST_COLOR && f <= M9_FS_INV_CONST_ALPHA;
-}
-
-static bool
-fs_reads_dst(const nir_shader *nir)
-{
-   nir_foreach_function_impl(impl, nir)
-      nir_foreach_block(block, impl)
-         nir_foreach_instr(instr, block)
-            if (instr->type == nir_instr_type_intrinsic &&
-                nir_instr_as_intrinsic(instr)->intrinsic ==
-                   nir_intrinsic_load_output &&
-                nir_intrinsic_io_semantics(nir_instr_as_intrinsic(instr))
-                   .fb_fetch_output)
-               return true;
-   return false;
-}
-
 /* GL blends an sRGB target in linear space.  The blend tail reads the
  * destination as stored, so a blended sRGB draw blends in the program
  * instead: the destination registers are read as a value, decoded, blended
@@ -6323,15 +6336,11 @@ fs_srgb(nir_shader *nir, const struct m9_fs_blend **blend, const char **reason)
    if (!b || !b->srgb)
       return true;
    if (blend_opaque(b)) {
-      m9_fs_lower_srgb(nir);
+      m9_fs_lower_srgb(nir, b->srgb);
       return true;
    }
-   /* GL has no logic op on an sRGB target (it is disabled). */
-   if (b->logic || fs_const_factor(b->src) || fs_const_factor(b->dst) ||
-       (b->separate && (fs_const_factor(b->alpha_src) ||
-                        fs_const_factor(b->alpha_dst)))) {
-      *reason = "blending into an sRGB target with a constant colour or a "
-                "logic op";
+   if (b->srgb != 1 || b->logic) {
+      *reason = "blending into several targets in one sRGB program";
       return false;
    }
    fs_flatten(nir);
@@ -6347,9 +6356,17 @@ fs_srgb(nir_shader *nir, const struct m9_fs_blend **blend, const char **reason)
                                  fs_pipe_factor[b->alpha_dst] } :
       opts.rt[0].rgb;
    NIR_PASS(_, nir, nir_lower_blend, &opts);
+   /* An unread destination is left undefined; the blend writes fsub, which
+    * the algebraic pass lowers as st's own passes did. */
+   NIR_PASS(_, nir, nir_lower_undef_to_zero, NULL);
+   NIR_PASS(_, nir, nir_opt_algebraic);
+   NIR_PASS(_, nir, nir_shader_alu_pass, fs_drop_canonicalize,
+            nir_metadata_control_flow, NULL);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_dce);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, srgb_dst,
             nir_metadata_control_flow, NULL);
-   m9_fs_lower_srgb(nir);
+   m9_fs_lower_srgb(nir, 1);
    *blend = NULL;
    return true;
 }

@@ -133,9 +133,9 @@ enum m9_fs_blend_func {
 
 struct m9_fs_blend {
    uint8_t src, dst;              /* enum m9_fs_factor, R,G,B (and A) */
-   /* The colour target stores sRGB, so the program encodes what it writes
-    * and blends against the decoded destination itself. */
-   bool srgb;
+   /* Targets (bit per target) storing sRGB: the program encodes what it
+    * writes there and blends against the decoded destination itself. */
+   uint8_t srgb;
    uint8_t func;                  /* enum m9_fs_blend_func */
    /* A differs from R,G,B: alpha_src/alpha_dst/alpha_func apply to it. */
    bool separate;
@@ -213,7 +213,7 @@ bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
 
 /* Rewrites the colour output with the vendor's sRGB transfer curve.  Exposed
  * so the offline test can check the lowering against a reference encode. */
-void m9_fs_lower_srgb(struct nir_shader *nir);
+void m9_fs_lower_srgb(struct nir_shader *nir, unsigned targets);
 
 /* Decodes the RGB of every fetch from a texture unit in the mask from sRGB
  * to linear after the sample; alpha stays linear.  Run it after the view
