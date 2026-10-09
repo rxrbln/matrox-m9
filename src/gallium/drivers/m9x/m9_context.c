@@ -5420,12 +5420,12 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
       return NULL;
    want.blend.srgb = util_format_is_srgb(cf);
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
-   /* The facing register's front is GL's counter-clockwise; st states the
-    * winding against a viewport it inverts for window buffers. */
+   /* The facing register's front is counter-clockwise in the target's
+    * own orientation, the one st states front_ccw in, for window buffers
+    * and FBOs alike. */
    if (ctx->rasterizer &&
        (ctx->fs->nir->info.inputs_read & VARYING_BIT_FACE))
-      want.face_flip = ctx->rasterizer->front_ccw ==
-                       (ctx->viewport.scale[1] > 0.0f);
+      want.face_flip = !ctx->rasterizer->front_ccw;
    for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++) {
       const struct pipe_sampler_view *view = ctx->fs_views[s];
 
