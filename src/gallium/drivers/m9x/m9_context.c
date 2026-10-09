@@ -9422,8 +9422,11 @@ m9_blit_src_span(int a, int b, int d0, int dsize, int s0, int ssize,
  * source rectangle is unpacked first, so a copy within one surface (CopyPixels)
  * reads the old content however the two boxes overlap.
  */
+/* blend: a second source slice at s->z + 1 mixed in with this weight, the
+ * linear filter in z of a volume blit (m9_blit_volume). */
 static bool
-m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
+m9_blit_cpu_blend(struct pipe_context *pctx, const struct pipe_blit_info *info,
+                  float blend)
 {
    const struct pipe_box *s = &info->src.box, *d = &info->dst.box;
    enum pipe_format sf = info->src.format, df = info->dst.format;
@@ -9442,6 +9445,8 @@ m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
    unsigned cmask = info->mask & PIPE_MASK_RGBA;
    bool linear = info->filter == PIPE_TEX_FILTER_LINEAR && !zs &&
                  !util_format_is_pure_integer(sf);
+   /* Depth filters like colour (mipmap generation); stencil stays nearest. */
+   bool zlinear = info->filter == PIPE_TEX_FILTER_LINEAR && do_z;
    int x0 = MIN2(d->x, d->x + d->width), x1 = MAX2(d->x, d->x + d->width);
    int y0 = MIN2(d->y, d->y + d->height), y1 = MAX2(d->y, d->y + d->height);
    int sx0, sx1, sy0, sy1, w, h, rw, rh;
@@ -9453,6 +9458,9 @@ m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
    bool ok = false;
 
    if (s->depth != 1 || d->depth != 1 || !s->width || !s->height ||
+       (blend > 0.0f && (zs || linear != (info->filter ==
+                                          PIPE_TEX_FILTER_LINEAR) ||
+                         util_format_is_pure_integer(sf))) ||
        !d->width || !d->height || info->swizzle_enable ||
        info->alpha_blend || (zs && cmask) || (!zs && !cmask) ||
        (zs && !do_z && !do_s) ||
@@ -9476,9 +9484,11 @@ m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
       return true;
    w = x1 - x0;
    h = y1 - y0;
-   m9_blit_src_span(x0, x1, d->x, d->width, s->x, s->width, sw, linear,
+   m9_blit_src_span(x0, x1, d->x, d->width, s->x, s->width, sw,
+                    linear || zlinear,
                     &sx0, &sx1);
-   m9_blit_src_span(y0, y1, d->y, d->height, s->y, s->height, sh, linear,
+   m9_blit_src_span(y0, y1, d->y, d->height, s->y, s->height, sh,
+                    linear || zlinear,
                     &sy0, &sy1);
    rw = sx1 - sx0 + 1;
    rh = sy1 - sy0 + 1;
@@ -9509,6 +9519,21 @@ m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
                                       rw, rh);
    }
    pipe_texture_unmap(pctx, st);
+   if (ok && blend > 0.0f) {
+      float *a = (float *)src, *b = MALLOC((size_t)rw * rh * 16);
+
+      smap = b ? pipe_texture_map(pctx, sres, info->src.level, s->z + 1,
+                                  PIPE_MAP_READ, sx0, sy0, rw, rh, &st) : NULL;
+      ok = smap != NULL;
+      if (ok) {
+         util_format_unpack_rgba_rect(sf, b, rw * 16, smap, st->stride,
+                                      rw, rh);
+         pipe_texture_unmap(pctx, st);
+         for (size_t i = 0; i < (size_t)rw * rh * 4; i++)
+            a[i] += (b[i] - a[i]) * blend;
+      }
+      FREE(b);
+   }
    /* Read back what the blit keeps: the other half of a packed depth/stencil
     * texel, or the channels outside the mask. */
    dmap = ok ? pipe_texture_map(pctx, dres, info->dst.level, d->z,
@@ -9527,8 +9552,23 @@ m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
             float u = m9_blit_coord(x0 + x, d->x, d->width, s->x, s->width);
             size_t i = (size_t)ty * rw + m9_blit_tap(u, sw) - sx0;
 
-            if (do_z)
+            if (zlinear) {
+               float fu = u - 0.5f, fv = v - 0.5f;
+               int ax = m9_blit_tap(fu, sw) - sx0;
+               int ay = m9_blit_tap(fv, sh) - sy0;
+               int bx = m9_blit_tap(fu + 1.0f, sw) - sx0;
+               int by = m9_blit_tap(fv + 1.0f, sh) - sy0;
+               double wx = fu - floorf(fu), wy = fv - floorf(fv);
+               double t = z[(size_t)ay * rw + ax] * (1 - wx) +
+                          z[(size_t)ay * rw + bx] * wx;
+               double l = z[(size_t)by * rw + ax] * (1 - wx) +
+                          z[(size_t)by * rw + bx] * wx;
+
+               row[x] = (uint32_t)MIN2(t * (1 - wy) + l * wy + 0.5,
+                                       (double)UINT32_MAX);
+            } else if (do_z) {
                row[x] = z[i];
+            }
             if (do_s)
                s8[x] = sbuf[i];
          }
@@ -9872,6 +9912,41 @@ m9_deferred_run(struct m9_context *ctx)
               "through transfers");
 }
 
+static bool
+m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   return m9_blit_cpu_blend(pctx, info, 0.0f);
+}
+
+/* A blit between boxes of different depth -- mipmap generation of a volume
+ * -- one destination slice at a time, the linear filter blending the two
+ * source slices around its centre. */
+static bool
+m9_blit_volume(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   const int sd = u_minify(info->src.resource->depth0, info->src.level);
+   const bool linear = info->filter == PIPE_TEX_FILTER_LINEAR &&
+                       !(info->mask & (PIPE_MASK_Z | PIPE_MASK_S));
+   struct pipe_blit_info slice = *info;
+
+   if (info->src.resource->target != PIPE_TEXTURE_3D ||
+       info->src.box.depth <= 0 || info->dst.box.depth <= 0)
+      return false;
+   slice.src.box.depth = slice.dst.box.depth = 1;
+   for (int k = 0; k < info->dst.box.depth; k++) {
+      float z = m9_blit_coord(k, 0, info->dst.box.depth, info->src.box.z,
+                              info->src.box.depth) - (linear ? 0.5f : 0.0f);
+      int z0 = m9_blit_tap(z, sd);
+      float w = linear && z0 + 1 < sd ? CLAMP(z - z0, 0.0f, 1.0f) : 0.0f;
+
+      slice.src.box.z = z0;
+      slice.dst.box.z = info->dst.box.z + k;
+      if (!m9_blit_cpu_blend(pctx, &slice, w))
+         return false;
+   }
+   return true;
+}
+
 static void
 m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
@@ -9892,7 +9967,11 @@ m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 
    m9_proxies_writeback(ctx, info->src.resource);
    m9_proxies_writeback(ctx, info->dst.resource);
-   if (!m9_blit_engine(pctx, info) &&
+   if (info->src.box.depth != info->dst.box.depth) {
+      if (!m9_blit_volume(pctx, info))
+         m9_warn_once(ctx, M9_WARN_BLIT, "a blit between boxes of different "
+                      "depth outside a volume is not implemented");
+   } else if (!m9_blit_engine(pctx, info) &&
        !util_try_blit_via_copy_region(pctx, info, false) &&
        !m9_blit_convert(pctx, info) &&
        !m9_blit_cpu(pctx, info))
