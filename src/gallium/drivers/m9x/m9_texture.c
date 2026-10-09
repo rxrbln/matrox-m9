@@ -124,13 +124,15 @@ m9_texture_compressed_small(uint32_t width, uint32_t height,
                             uint8_t block_bytes)
 {
    /* The storage kind a level is written and sampled through: the small
-    * 2-D kind up to 64 in both the 32-aligned span and the microtile-
-    * aligned height, the ordinary tiled kind above it (MEASURED). */
+    * 2-D kind up to a 64-texel span and 256 bytes of blocks a column --
+    * 128 texel rows for DXT1, 64 for DXT2..5 -- the tiled kind beyond.  The
+    * vendor's own layout picks it so: 64x128 and 32x128 DXT1 small, 64x129
+    * and 32x144 tiled, DXT3 64x57 small and 64x65 tiled (emulated MxMD). */
    uint32_t span = (width + 31) & ~31u;
    uint32_t lines = block_bytes == 8 ? ((height + 15) & ~15u) :
                                        ((height + 7) & ~7u);
 
-   return span <= 64 && lines <= 64;
+   return span <= 64 && lines <= (block_bytes == 8 ? 128u : 64u);
 }
 
 uint64_t

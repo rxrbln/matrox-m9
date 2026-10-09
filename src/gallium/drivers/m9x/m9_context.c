@@ -917,19 +917,18 @@ m9_compressed_lines(uint32_t height, uint32_t block_bytes)
    return (height + grain - 1) & ~(grain - 1);
 }
 
-/* MEASURED: the storage kind is the one the level was written through --
- * the small 2-D kind up to 64 in both dimensions, the ordinary tiled kind
- * above it.  M9X_DXT_LEVEL_KIND forces one of the two, which is how a
- * chain's levels were checked against both. */
+/* MEASURED: the storage kind is the one the level was written through,
+ * as m9_texture_compressed_small() picks it.  M9X_DXT_LEVEL_KIND forces one
+ * of the two, which is how a chain's levels were checked against both. */
 static enum m9_texture_kind
-m9_compressed_kind(uint32_t span, uint32_t lines)
+m9_compressed_kind(uint32_t span, uint32_t lines, uint32_t block_bytes)
 {
    int force = debug_get_num_option("M9X_DXT_LEVEL_KIND", 0);
 
    if (force)
       return force == 1 ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER;
-   return span <= 64 && lines <= 64 ? M9_TEXTURE_KIND_2D :
-                                      M9_TEXTURE_KIND_RENDER;
+   return m9_texture_compressed_small(span, lines, block_bytes) ?
+          M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER;
 }
 
 /*
@@ -953,7 +952,7 @@ m9_texture_window_blocks(struct m9_context *ctx,
                                   m9_compressed_span(lvl->width);
    uint32_t lines = lvl->in_tail ? M9_COMPRESSED_TAIL_HEIGHT :
                                    m9_compressed_lines(lvl->height, block);
-   enum m9_texture_kind kind = m9_compressed_kind(span, lines);
+   enum m9_texture_kind kind = m9_compressed_kind(span, lines, block);
    uint32_t cols = ((uint32_t)box->width + 3) / 4;
    uint32_t rows = ((uint32_t)box->height + 3) / 4;
 
@@ -978,13 +977,6 @@ m9_texture_window_blocks(struct m9_context *ctx,
    };
    int ret = image && cols && rows && !(box->x & 3) && !(box->y & 3) &&
              lvl->offset <= UINT32_MAX ? 0 : -EINVAL;
-
-   /* MEASURED: a level of 64 columns or less that is too tall for the small
-    * kind does not come back from the window -- 64x128 and 32x128 DXT1
-    * return the wrong texels in fifteen of every sixteen -- so its content
-    * cannot be stored and the level is refused rather than sampled wrong. */
-   if (!ret && kind != M9_TEXTURE_KIND_2D && span <= 64)
-      ret = -ENOTSUP;
 
    if (!ret && write)
       for (uint32_t r = 0; r < rows; r++)
@@ -4767,7 +4759,8 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
 
          *bind = (struct m9_texture_bind) {
             .code = res->texture_code,
-            .kind = m9_compressed_kind(span, lines),
+            .kind = m9_compressed_kind(span, lines,
+                                       res->texture.block_bytes),
             .width = (res->width + 3) & ~3u,
             .height = (res->height + 3) & ~3u,
             .depth = 1,
