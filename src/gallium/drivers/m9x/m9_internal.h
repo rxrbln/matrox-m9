@@ -121,6 +121,10 @@ struct m9_resource {
    void *map;
    /* Hierarchical-Z metadata owned by a D24S8 depth image. */
    struct m9_resource *hz;
+   /* A depth image whose sampler descriptor names its padded span is
+    * sampled from this copy in texture storage (m9_wrap_shadow_wanted). */
+   struct pipe_resource *wrap_shadow;
+   uint64_t wrap_shadow_generation;
 };
 
 /* One surface-owned FAA graph. The indirect command pool belongs to the

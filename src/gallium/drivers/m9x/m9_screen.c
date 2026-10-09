@@ -1048,6 +1048,7 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
    struct drm_gem_close close_bo = { .handle = resource->handle };
 
    m9_resource_release_hz(m9_screen(pscreen), resource);
+   pipe_resource_reference(&resource->wrap_shadow, NULL);
    /* Heap-backed Gallium buffers carry no kernel handle. */
    if (resource->map && !resource->handle)
       align_free(resource->map);

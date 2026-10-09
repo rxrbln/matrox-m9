@@ -3975,6 +3975,13 @@ m9_submit_job_one(struct m9_context *ctx)
       }
       if (!ret && !ctx->dry_run && !deferred_submit)
          m9_job_submitted(ctx, be_bound, point);
+      /* What the job renders moves the targets' contents on. */
+      if (!ret && !ctx->dry_run && ctx->color) {
+         m9_res(ctx->color)->generation++;
+         for (unsigned s = 1; s < ctx->color_count; s++)
+            m9_res(ctx->color_extra[s - 1])->generation++;
+         key->depth->generation++;
+      }
       if (faa_store_locked && !ctx->dry_run)
          m9_faa_store_submitted_locked(ctx->screen, &job, ret, point);
       /* A second raster pass inside one submission stalls the engine
@@ -4781,21 +4788,27 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    }
    /* A depth surface samples through the descriptor the raster pass binds
     * it with; shadowmap_d24 binds the very same word in both roles
-    * (CAPTURED, captures/m9x-vendor-openbits-20260917). */
+    * (CAPTURED, captures/m9x-vendor-openbits-20260917).  The sampler takes
+    * the row span as the width rounded to 32, so the true width serves only
+    * where that is the 64-aligned depth span; elsewhere the span is named
+    * and m9_wrap_shadow_wanted() samples a copy (MEASURED, rtsample). */
    if (res->kind == M9_RESOURCE_LINEAR_DEPTH && res->format) {
       bool small = res->width <= 64 && res->height <= 64;
+      uint32_t span = m9_depth_row_span(res->width, res->height);
 
       *bind = (struct m9_texture_bind) {
          .code = (uint8_t)(res->format << 1),
          .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = m9_depth_row_span(res->width, res->height),
+         .width = ((res->width + 31) & ~31u) == span ? res->width : span,
          .height = res->height, .depth = 1,
       };
       return NULL;
    }
    /* Captured 79=c8210080 FBO textures: ordinary tiled render targets.  The
-    * descriptor carries the 32-aligned row span; other widths sample through
-    * scaled coordinates (m9_job_textures). */
+    * descriptor carries the true width, from which the sampler takes the
+    * 32-aligned row span; naming the span instead clamped and wrapped at the
+    * padding (MEASURED, rtsample: CLAMP_TO_EDGE, REPEAT and linear edges
+    * exact at 100x37, 200x150, 300x200). */
    enum pipe_format store = m9_format_storage(res->base.format);
 
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
@@ -4815,12 +4828,63 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       *bind = (struct m9_texture_bind) {
          .code = (uint8_t)(res->format << 1),
          .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = small ? res->width : (res->width + 31) & ~31u,
+         .width = res->width,
          .height = res->height, .depth = 1,
       };
       return NULL;
    }
    return "texture is not stored in a captured sampler layout; draw skipped";
+}
+
+/* A depth image whose descriptor names its padded span (m9_texture_bind_view)
+ * clamps and wraps at the padding, so edge and out-of-range samples read it
+ * (MEASURED: piglit texwrap depth formats, rtsample); such a view samples a
+ * copy in texture storage. */
+static bool
+m9_wrap_shadow_wanted(const struct pipe_sampler_view *view,
+                      const struct pipe_sampler_state *sampler)
+{
+   const struct m9_resource *res;
+   struct m9_texture_bind bind;
+
+   if (!view || !view->texture || !sampler ||
+       view->target != PIPE_TEXTURE_2D || m9_texture_bind_view(view, &bind))
+      return false;
+   res = m9_res(view->texture);
+   return res->kind == M9_RESOURCE_LINEAR_DEPTH &&
+          (res->width != bind.width || res->height != bind.height);
+}
+
+/* Brings the copies the bound views want up to date; outside the draw
+ * module, since a copy synchronises with the engine. */
+static void
+m9_wrap_shadows_refresh(struct m9_context *ctx)
+{
+   for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++) {
+      struct pipe_sampler_view *view = ctx->fs_views[i];
+      struct m9_resource *res;
+      struct pipe_box box;
+
+      if (!m9_wrap_shadow_wanted(view, ctx->fs_samplers[i]))
+         continue;
+      res = m9_res(view->texture);
+      if (!res->wrap_shadow) {
+         struct pipe_resource templ = view->texture[0];
+
+         templ.bind = PIPE_BIND_SAMPLER_VIEW;
+         res->wrap_shadow = ctx->screen->base.resource_create(
+            &ctx->screen->base, &templ);
+         if (!res->wrap_shadow)
+            continue;
+      } else if (res->wrap_shadow_generation == res->generation) {
+         continue;
+      }
+      m9_context_sync(ctx);
+      u_box_2d(0, 0, res->width, res->height, &box);
+      util_resource_copy_region(&ctx->base, res->wrap_shadow, 0, 0, 0, 0,
+                                view->texture, 0, &box);
+      res->wrap_shadow_generation = res->generation;
+   }
 }
 
 static bool
@@ -4855,6 +4919,16 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
             key->coord_bias[u][i] = 0.0f;
          }
          continue;
+      }
+      struct pipe_sampler_view shadow_view;
+
+      if (m9_wrap_shadow_wanted(view, sampler) &&
+          m9_res(view->texture)->wrap_shadow &&
+          m9_res(view->texture)->wrap_shadow_generation ==
+          m9_res(view->texture)->generation) {
+         shadow_view = *view;
+         shadow_view.texture = m9_res(view->texture)->wrap_shadow;
+         view = &shadow_view;
       }
       reason = m9_texture_bind_view(view, &bind);
       bind.srgb = !reason && util_format_is_srgb(view->format);
@@ -8802,6 +8876,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    /* A job held for the scratch path reaches the engine before this draw,
     * which was recorded after it. */
    m9_deferred_run(ctx);
+   m9_wrap_shadows_refresh(ctx);
    if (indirect) {
       if (num_draws && !m9_draw_indirect(pctx, info, drawid_offset, indirect)) {
          m9_skip_reason(ctx, "indirect draw arguments are invalid or "
