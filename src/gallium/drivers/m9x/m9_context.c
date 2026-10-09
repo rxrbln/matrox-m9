@@ -599,7 +599,7 @@ struct m9_native_vs_reason {
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
-/* M9X_KILL_DRAIN: 0 off, 1 the full target, N > 1 an N x N corner (16). */
+/* M9X_KILL_DRAIN: 0 off, 1 the full target (default), N > 1 an N x N corner. */
 static unsigned m9_kill_drain;
 /* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
  * a destination sweep sees where an output lands rather than where the mask
@@ -12573,7 +12573,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_near_ordered = debug_get_bool_option("M9X_NEAR_ORDERED", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
-   m9_kill_drain = debug_get_num_option("M9X_KILL_DRAIN", 16);
+   m9_kill_drain = debug_get_num_option("M9X_KILL_DRAIN", 1);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
