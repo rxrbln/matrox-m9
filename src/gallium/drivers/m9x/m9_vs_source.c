@@ -599,37 +599,138 @@ m9_vs_source_float_channels(enum pipe_format format)
    }
 }
 
-static inline void
-m9_vs_source_fetch(const struct util_format_unpack_description *unpack,
-                   unsigned float_channels, const uint8_t *src, float rgba[4])
+enum m9_vs_source_kind {
+   M9_VS_SOURCE_VALUE,     /* the same four floats in every record */
+   M9_VS_SOURCE_REPEAT,    /* one unpacked texel stored by the attribute's rule */
+   M9_VS_SOURCE_FLOAT,     /* plain 32-bit float channels, copied */
+   M9_VS_SOURCE_UNPACK,
+};
+
+/* One attribute resolved for a whole call: its element base, the highest
+ * vertex its mapping holds and how a record takes it. */
+struct m9_vs_source_plan {
+   enum m9_vs_source_kind kind;
+   const uint8_t *base;
+   uint64_t max_vertex;
+   unsigned stride, copy;
+   const struct m9_vs_source_attr *s;
+   const struct util_format_unpack_description *unpack;
+   float value[4];
+};
+
+static bool
+m9_vs_source_plan_init(const struct m9_vs_source_attr *s,
+                       const uint8_t *const *buffer_map,
+                       const unsigned *buffer_size, unsigned buffer_count,
+                       struct m9_vs_source_plan *p)
 {
-   if (float_channels) {
-      rgba[0] = rgba[1] = rgba[2] = 0.0f;
-      rgba[3] = 1.0f;
-      memcpy(rgba, src, float_channels * sizeof(float));
-   } else {
-      unpack->unpack_rgba(rgba, src, 1);
+   const struct util_format_unpack_description *unpack;
+   uint64_t end;
+   unsigned size;
+
+   memset(p, 0, sizeof(*p));
+   p->s = s;
+   if (s->constant) {
+      p->kind = M9_VS_SOURCE_VALUE;
+      memcpy(p->value, s->value, sizeof(p->value));
+      return true;
+   }
+   unpack = util_format_unpack_description(s->format);
+   if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
+       !unpack->unpack_rgba)
+      return false;
+   size = buffer_size[s->buffer];
+   end = (uint64_t)s->src_offset + util_format_get_blocksize(s->format);
+   if (end > size)
+      return false;
+   p->base = buffer_map[s->buffer] + s->src_offset;
+   p->unpack = unpack;
+   p->stride = s->stride;
+   if (!s->stride) {
+      p->kind = M9_VS_SOURCE_REPEAT;
+      unpack->unpack_rgba(p->value, p->base, 1);
+      return true;
+   }
+   p->max_vertex = MIN2((size - end) / s->stride, (uint64_t)UINT_MAX);
+   p->copy = m9_vs_source_float_channels(s->format);
+   if (p->copy && !s->scalar)
+      p->copy = MIN2(p->copy, s->components);
+   p->kind = p->copy ? M9_VS_SOURCE_FLOAT : M9_VS_SOURCE_UNPACK;
+   return true;
+}
+
+static inline void
+m9_vs_source_put(const struct m9_vs_source_plan *p, float *record,
+                 uint64_t vertex)
+{
+   const struct m9_vs_source_attr *s = p->s;
+   float *dst = record + s->dword;
+   float rgba[4];
+
+   switch (p->kind) {
+   case M9_VS_SOURCE_VALUE:
+      memcpy(dst, p->value, sizeof(p->value));
+      return;
+   case M9_VS_SOURCE_REPEAT:
+      m9_vs_source_store(s, dst, p->value);
+      return;
+   case M9_VS_SOURCE_FLOAT: {
+      const float *src = (const float *)(p->base + vertex * p->stride);
+
+      if (s->scalar) {
+         if (s->scalar_first) {
+            dst[1] = dst[2] = 0.0f;
+            dst[3] = 1.0f;
+         }
+         memcpy(dst, src, sizeof(float));
+         return;
+      }
+      /* Channels past the copied ones are the GL defaults (0, 0, 0, 1). */
+      dst[0] = dst[1] = dst[2] = 0.0f;
+      dst[3] = 1.0f;
+      memcpy(dst, src, p->copy * sizeof(float));
+      return;
+   }
+   case M9_VS_SOURCE_UNPACK:
+      p->unpack->unpack_rgba(rgba, p->base + vertex * p->stride, 1);
+      m9_vs_source_store(s, dst, rgba);
+      return;
    }
 }
 
-/* A zero-stride element addresses one bounded texel for the whole draw.
- * Expand it into ordinary source records; the GPU declaration and its record
- * stride stay the same as for per-vertex attributes. */
+/* Records vertex-major, so each record is written once in order. vertex
+ * NULL names the run first..first+count-1. */
 static bool
-m9_vs_source_repeat(const struct m9_vs_source_layout *layout,
-                    const struct m9_vs_source_attr *s,
-                    const struct util_format_unpack_description *unpack,
-                    const uint8_t *map, unsigned size, unsigned count,
-                    float *out)
+m9_vs_source_write(const struct m9_vs_source_layout *layout,
+                   const uint8_t *const *buffer_map,
+                   const unsigned *buffer_size, unsigned buffer_count,
+                   unsigned first, const uint32_t *vertex, unsigned count,
+                   float *out)
 {
-   float rgba[4];
+   struct m9_vs_source_plan plan[M9_VS_MAX_SOURCE_ATTRIBUTES];
+   uint64_t max_vertex = UINT64_MAX;
+   const unsigned attrs = layout->attr_count, rd = layout->record_dwords;
 
-   if (!m9_vs_source_range(s, size, 0))
+   if (attrs > ARRAY_SIZE(plan))
       return false;
-   unpack->unpack_rgba(rgba, map + s->src_offset, 1);
-   for (unsigned v = 0; v < count; v++)
-      m9_vs_source_store(s, out + (uint64_t)v * layout->record_dwords + s->dword,
-                         rgba);
+   for (unsigned a = 0; a < attrs; a++) {
+      if (!m9_vs_source_plan_init(&layout->attr[a], buffer_map, buffer_size,
+                                  buffer_count, &plan[a]))
+         return false;
+      if (plan[a].stride)
+         max_vertex = MIN2(max_vertex, plan[a].max_vertex);
+   }
+   if (!vertex && (uint64_t)first + count - 1 > max_vertex)
+      return false;
+   for (unsigned v = 0; v < count; v++) {
+      uint64_t at = (uint64_t)first + (vertex ? vertex[v] : v);
+      float *record = out + (uint64_t)v * rd;
+
+      if (at > max_vertex)
+         return false;
+      for (unsigned a = 0; a < attrs; a++)
+         m9_vs_source_put(&plan[a], record, at);
+   }
    return true;
 }
 
@@ -641,43 +742,8 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
 {
    if (!layout || !buffer_map || !buffer_size || !out || !count)
       return false;
-   for (unsigned a = 0; a < layout->attr_count; a++) {
-      const struct m9_vs_source_attr *s = &layout->attr[a];
-      const struct util_format_unpack_description *unpack;
-
-      if (s->constant) {
-         for (unsigned v = 0; v < count; v++)
-            memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
-                   s->value, sizeof(s->value));
-         continue;
-      }
-      unpack = util_format_unpack_description(s->format);
-      if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
-          !unpack->unpack_rgba)
-         return false;
-      if (!s->stride) {
-         if (!m9_vs_source_repeat(layout, s, unpack, buffer_map[s->buffer],
-                                  buffer_size[s->buffer], count, out))
-            return false;
-         continue;
-      }
-      const unsigned nf = m9_vs_source_float_channels(s->format);
-      /* The last vertex this draw reads must lie inside the mapping. */
-      if (!m9_vs_source_range(s, buffer_size[s->buffer],
-                              (uint64_t)first + count - 1))
-         return false;
-
-      for (unsigned v = 0; v < count; v++) {
-         const uint8_t *src = buffer_map[s->buffer] +
-                              ((uint64_t)first + v) * s->stride + s->src_offset;
-         float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
-         float rgba[4];
-
-         m9_vs_source_fetch(unpack, nf, src, rgba);
-         m9_vs_source_store(s, dst, rgba);
-      }
-   }
-   return true;
+   return m9_vs_source_write(layout, buffer_map, buffer_size, buffer_count,
+                             first, NULL, count, out);
 }
 
 bool
@@ -689,41 +755,8 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
 {
    if (!layout || !buffer_map || !buffer_size || !vertex || !out || !count)
       return false;
-   for (unsigned a = 0; a < layout->attr_count; a++) {
-      const struct m9_vs_source_attr *s = &layout->attr[a];
-      const struct util_format_unpack_description *unpack;
-
-      if (s->constant) {
-         for (unsigned v = 0; v < count; v++)
-            memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
-                   s->value, sizeof(s->value));
-         continue;
-      }
-      unpack = util_format_unpack_description(s->format);
-      if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
-          !unpack->unpack_rgba)
-         return false;
-      if (!s->stride) {
-         if (!m9_vs_source_repeat(layout, s, unpack, buffer_map[s->buffer],
-                                  buffer_size[s->buffer], count, out))
-            return false;
-         continue;
-      }
-      const unsigned nf = m9_vs_source_float_channels(s->format);
-      for (unsigned v = 0; v < count; v++) {
-         uint64_t at = (uint64_t)first + vertex[v];
-         const uint8_t *src;
-         float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
-         float rgba[4];
-
-         if (!m9_vs_source_range(s, buffer_size[s->buffer], at))
-            return false;
-         src = buffer_map[s->buffer] + at * s->stride + s->src_offset;
-         m9_vs_source_fetch(unpack, nf, src, rgba);
-         m9_vs_source_store(s, dst, rgba);
-      }
-   }
-   return true;
+   return m9_vs_source_write(layout, buffer_map, buffer_size, buffer_count,
+                             first, vertex, count, out);
 }
 
 struct clip_input {
