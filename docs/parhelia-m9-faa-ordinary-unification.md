@@ -195,3 +195,76 @@ measured. Agent m9unify4 did it on 2026-10-08 (OFFLINE), with these results:
 
 Results, the overlap-helper analysis and the card plan are in
 [tests/m9-unify-stage2-20261008](../tests/m9-unify-stage2-20261008/README.md).
+
+Stage 2b and stage 3 (agent m9unify6, 2026-10-08/09):
+
+* Stage 2b, MEASURED on nano:
+  * FAA gears runs on a requester that ordinary jobs have used.
+  * Ordinary jobs wait in the kernel for the FAA idle boundary. This is a
+    waitqueue that progress and fence retirement wake, bounded at ten fence
+    timeouts without graph progress.
+  * A released graph detaches at an idle boundary and rearms the staging
+    slots, with BASE and END left as an empty pair.
+  * In Q3 td-faa, 27 INIT/detach cycles ran.
+  * A Lock held past the wait bound is force-unlocked, and the graph is
+    revoked (-ECANCELED). This PASSed with DRM `7fb97ce`.
+  * An ordinary submit from the blocking graph's own file fails at once
+    (`df309db`, OFFLINE).
+* Stage 3, shared encoder header, done and integrated:
+  * `m9x/m9_hw_encode.h` (GPL-2.0-only OR MIT) carries the surface
+    descriptor d0/d1, the compare codes, depth a8/ef and colour mask ab, the
+    packet header and E6/TRANSITION framing words, and the texture/sampler
+    words 70/79/7a/7c/7d.
+  * The kernel FAA producers and Mesa m9x share it. Mesa carries a
+    byte-identical copy, enforced by `tests/hw-encode-cpu.py`.
+  * Every conversion was proven by stream identity in the host tests.
+  * The inventory and order are in
+    `campaign/agents/m9unify6/stage3-builders.md`.
+* Open, the interlude stall: an FAA part after ordinary jobs can stall
+  (Q3, three reproductions).
+  * Page-aligning the FAA part does not help (MEASURED, FAILED).
+  * The leading cause (DERIVED from decoding) is engine state that ordinary
+    jobs change and later FAA frames never rewrite: 6a/6b/6c (the linked
+    program, with a reloc into a Mesa buffer), strides 11..13, slots 05/07
+    and b2/b3.
+* FAA context shadow (`0982baa`, merged as `cf418aa`, OFFLINE), behind
+  `faa_context_restore` (default 0):
+  * It records the FAA context's register values from every FAA END post
+    and INIT, including linked secondaries.
+  * It marks what each ordinary stream on the retained primary writes.
+  * In the interlude settle it writes the changed indices back to their FAA
+    values.
+  * The card A/B against `faa_interlude_restore=1` (the fixed-zero
+    diagnostic) is scheduled in m9faa6's Q3 group.
+  * Design: `campaign/agents/m9unify6/faa-context-shadow.md`.
+* Remaining steps:
+  1. The card A/B of the context shadow, Q3 td-faa first.
+  2. The gears interlude harness. It needs a DSO that submits its shadow
+     ordinary work before preparing the next FAA frame; m9faa6's DSO
+     39adab6a prepares first, so its own job is refused.
+  3. Template to synthesis, one producer at a time, with byte identity
+     against the template as the oracle. It has not started. The next step
+     is the PRESENT encoder, which is outside m9faa6's later/dual/depth-frame
+     files. Proposed file list:
+     * `m9x/m9_faa_graph_present_encode.c` is the only code change. Its
+       25-word literal, patched at fixed offsets, becomes packets built with
+       `M9_HW_HDR` and `m9_hw_surface_desc0/1` from the live views and the
+       Unlock point U. The decoded packets are:
+       * `e6,e6,e3` = 1, 2, (U+0x10)|1;
+       * `e6,8f,92,90` = 0x04000001, 0xc0000600, ~0, 0;
+       * `91,b0,b1,f0` = 0, dst|1, dst desc0 as format 0x78, 0x080c040c;
+       * `78,79,f3,f2` = src|1, src desc0, 0, 0;
+       * `ef,fc` = 0xaa, the negated extents;
+       * `e6,e3` = 1, (U+0x20)|1.
+
+       Values with no proven meaning stay numeric, with their capture cited.
+     * `m9x/tests/faa-present-encode-cpu.py` gains a byte-identity check of
+       the synthesized image against the template encoder (taken from git)
+       over every admitted runtime shape, several page-aligned bases and
+       Unlock points, refusals included. `faa-present-runtime-cpu.py` must
+       stay green unchanged.
+     * `m9_hw_encode.h` is not touched, so the Mesa copy is unaffected.
+  4. Kernel style for the FAA skip-list functions, once m9faa6 is no longer
+     editing them.
+  5. The queue initialization shared between FAA INIT and sequence0 (needs a
+     card check).
