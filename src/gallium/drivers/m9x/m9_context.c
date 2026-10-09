@@ -12869,6 +12869,9 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    draw_wide_point_threshold(ctx->draw, 0.0f);
    /* Smooth lines become quads whose shader computes their coverage. */
    draw_install_aaline_stage(ctx->draw, &ctx->base);
+   /* Smooth points become quads whose shader discards outside the disc and
+    * scales alpha by the edge coverage. */
+   draw_install_aapoint_stage(ctx->draw, &ctx->base, nir_type_bool1);
    ctx->bind_fs_wrapped = ctx->base.bind_fs_state;
    ctx->base.bind_fs_state = m9_bind_fs_handle;
    draw_set_constant_buffer_stride(ctx->draw, sizeof(float));
