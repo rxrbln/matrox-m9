@@ -4,8 +4,12 @@
  * Linear CPU access to tiled M9 render targets through the host-aperture
  * surface window (slot 1); the slot 0 identity view stays valid meanwhile.
  */
+#include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
+#include <linux/ktime.h>
+#include <linux/moduleparam.h>
 #include <linux/overflow.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
@@ -15,6 +19,7 @@
 #include <drm/drm_gem_vram_helper.h>
 
 #include "m9_drv.h"
+#include "m9_engine_read_encode.h"
 #include "m9_reg.h"
 
 #define M9_SURFACE_MAX_SPAN	2048u
@@ -25,6 +30,25 @@
 /* Texture storage kinds: small (<= 64x64) and 32-aligned large levels. */
 #define M9_TEXTURE_KIND_SMALL	0x01u
 #define M9_TEXTURE_KIND_LARGE	0x21u
+/* Rows of the widest surface one 32-row chunk needs (MxMD.dll 0xb14f3). */
+#define M9_ENGINE_READ_MIN_RING	(M9_SURFACE_MAX_SPAN * 4 * 32)
+#define M9_ENGINE_READ_MAX_RING	SZ_64M
+
+static uint m9_surface_engine_read;
+module_param_named(surface_engine_read, m9_surface_engine_read, uint, 0644);
+MODULE_PARM_DESC(surface_engine_read,
+		 "Read render targets by engine copy to system memory: 0 window, 1 with the vendor 2-D state, 2 copy registers only (UNTESTED)");
+static uint m9_surface_engine_min_bytes = SZ_64K;
+module_param_named(surface_engine_min_bytes, m9_surface_engine_min_bytes, uint,
+		   0644);
+MODULE_PARM_DESC(surface_engine_min_bytes,
+		 "Smallest read box the engine copy takes, in bytes");
+/* The vendor's two DdBlt rings are 2 MiB each (ring heap +0x4258). */
+static uint m9_surface_engine_ring_kib = 2048;
+module_param_named(surface_engine_ring_kib, m9_surface_engine_ring_kib, uint,
+		   0444);
+MODULE_PARM_DESC(surface_engine_ring_kib,
+		 "Size of each of the two engine readback rings, KiB");
 
 struct m9_surface_view {
 	bool captured_cpu_view;
@@ -271,11 +295,174 @@ void m9x_surface_read_locked(struct m9x_device *mdev, u32 offset, u32 d0,
 	m9x_address_surface_release(mdev);
 }
 
+/* Both rings and the stream image, allocated once and kept until detach. */
+static int m9_engine_read_staging_locked(struct m9x_device *mdev)
+{
+	struct m9x_engine_read_staging *s = &mdev->engine_read;
+	struct device *dev = &mdev->pdev->dev;
+	u32 bytes, i;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (s->words)
+		return 0;
+	if (s->failed)
+		return -ENOMEM;
+	s->failed = true;
+	bytes = min_t(u64, (u64)m9_surface_engine_ring_kib * SZ_1K,
+		      M9_ENGINE_READ_MAX_RING);
+	bytes = PAGE_ALIGN(max_t(u32, bytes, M9_ENGINE_READ_MIN_RING));
+	for (i = 0; i < M9X_ENGINE_READ_RINGS; i++) {
+		s->cpu[i] = dmam_alloc_coherent(dev, bytes, &s->bus[i],
+						GFP_KERNEL);
+		if (!s->cpu[i])
+			goto fail;
+		/* b6 takes a 32-bit bus address with the tag in its low bits. */
+		if (upper_32_bits(s->bus[i] + bytes - 1)) {
+			dmam_free_coherent(dev, bytes, s->cpu[i], s->bus[i]);
+			s->cpu[i] = NULL;
+			goto fail;
+		}
+	}
+	s->capacity = PARHELIA_M9_COMMAND_BYTES / sizeof(u32) / 2;
+	s->max_chunks = s->capacity / M9X_ENGINE_READ_CHUNK_WORDS;
+	s->chunks = devm_kcalloc(dev, s->max_chunks, sizeof(*s->chunks),
+				 GFP_KERNEL);
+	s->words = devm_kcalloc(dev, s->capacity, sizeof(*s->words),
+				GFP_KERNEL);
+	if (!s->chunks || !s->words)
+		goto fail;
+	s->bytes = bytes;
+	s->failed = false;
+	dev_info(dev, "M9 engine readback rings: %#llx %#llx, %u bytes each\n",
+		 (u64)s->bus[0], (u64)s->bus[1], bytes);
+	return 0;
+fail:
+	for (i = 0; i < M9X_ENGINE_READ_RINGS; i++)
+		if (s->cpu[i])
+			dmam_free_coherent(dev, bytes, s->cpu[i], s->bus[i]);
+	if (s->chunks)
+		devm_kfree(dev, s->chunks);
+	if (s->words)
+		devm_kfree(dev, s->words);
+	memset(s->cpu, 0, sizeof(s->cpu));
+	s->chunks = NULL;
+	s->words = NULL;
+	return -ENOMEM;
+}
+
+static bool m9_engine_read_admitted_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+
+	/* Only the Linux ordinary context on the staging slots, idle. */
+	return !t->wedged && !t->faa && !t->faa_retiring &&
+	       !t->faa_virtual_primary && !t->faa_source_context &&
+	       t->bus_master_enabled && t->transport_armed &&
+	       !t->queue_count && !t->async_pending &&
+	       m9x_triangle_context_ready_locked(mdev) &&
+	       !m9x_faa_ordinary_blocked_locked(mdev) &&
+	       !m9x_faa_graph_preparing(mdev);
+}
+
+/*
+ * Copy a render-target box to @kbuf through the vendor DdBlt video->system
+ * engine copy.  -EOPNOTSUPP means nothing was posted: use the window.
+ */
+static int m9_surface_engine_read_locked(struct m9x_device *mdev, s64 offset,
+					 const struct drm_parhelia_m9_surface_access *args,
+					 const struct m9_surface_view *view,
+					 u8 *kbuf, size_t row_bytes)
+{
+	struct m9x_engine_read_staging *s = &mdev->engine_read;
+	struct m9x_surface_read_stats *st = &mdev->surface_stats;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_engine_read_request req = {
+		.descriptor0 = args->descriptor0,
+		.descriptor1 = args->descriptor1,
+		.x = args->x,
+		.width = args->width,
+		.fence_bus = lower_32_bits(t->fence_bus),
+		.state = m9_surface_engine_read == 1,
+	};
+	struct m9x_engine_read_plan plan;
+	u64 start = ktime_get_ns(), gpu, batches = 0, chunks = 0;
+	u32 row = 0, i, r;
+	bool posted;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (!m9_engine_read_admitted_locked(mdev)) {
+		ret = -EBUSY;
+		goto refuse;
+	}
+	gpu = M9_VRAM_GPU_BASE + offset;
+	if (offset < 0 || offset + view->bytes > m9x_vram_gpu_limit(mdev) ||
+	    upper_32_bits(gpu) || upper_32_bits(t->fence_bus)) {
+		ret = -ERANGE;
+		goto refuse;
+	}
+	ret = m9_engine_read_staging_locked(mdev);
+	if (ret)
+		goto refuse;
+	req.source = lower_32_bits(gpu);
+	for (i = 0; i < M9X_ENGINE_READ_RINGS; i++)
+		req.ring[i] = (struct m9x_engine_read_ring) {
+			.bus = lower_32_bits(s->bus[i]), .bytes = s->bytes,
+		};
+	while (row < args->height) {
+		req.y = args->y + row;
+		req.height = args->height - row;
+		req.token = t->next_fence;
+		ret = m9x_engine_read_encode(&req, s->words, s->capacity,
+					     s->chunks, s->max_chunks, &plan);
+		if (ret)
+			goto refuse;
+		posted = false;
+		ret = m9x_submit_kernel_stream_locked(mdev, s->words,
+						      plan.dwords, plan.final,
+						      NULL, &posted, false);
+		if (ret && !posted && !t->wedged)
+			goto refuse;
+		if (ret)
+			return ret;
+		t->next_fence = plan.final + 0x10;
+		if (!st->engine_reads && !batches)
+			dev_info(&mdev->pdev->dev,
+				 "M9 engine readback: first batch retired, %u dwords %u chunks pitch %u final %#x\n",
+				 plan.dwords, plan.chunks, plan.pitch,
+				 plan.final);
+		for (i = 0; i < plan.chunks; i++) {
+			const struct m9x_engine_read_chunk *c = &s->chunks[i];
+			const u8 *src = (const u8 *)s->cpu[c->ring] + c->offset;
+
+			for (r = 0; r < c->rows; r++)
+				memcpy(kbuf + (size_t)(row + c->row + r) * row_bytes,
+				       src + (size_t)r * plan.pitch, row_bytes);
+		}
+		row += plan.rows;
+		batches++;
+		chunks += plan.chunks;
+	}
+	st->engine_reads++;
+	st->engine_bytes += (u64)args->height * row_bytes;
+	st->engine_batches += batches;
+	st->engine_chunks += chunks;
+	st->engine_ns += ktime_get_ns() - start;
+	return 0;
+refuse:
+	st->refused++;
+	st->last_refusal = ret;
+	dev_info_ratelimited(&mdev->pdev->dev,
+			     "M9 engine readback refused (%d), window read\n", ret);
+	return -EOPNOTSUPP;
+}
+
 static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 			     struct drm_parhelia_m9_surface_access *args)
 {
 	bool write = args->op == PARHELIA_M9_ACCESS_WRITE;
 	bool texture = args->flags & PARHELIA_M9_ACCESS_TEXTURE;
+	bool engine;
 	struct drm_gem_vram_object *vram;
 	struct m9_surface_view view;
 	struct drm_gem_object *gem;
@@ -295,6 +482,9 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	if (!mdev->bar0_window)
 		return -ENODEV;
 	row_bytes = (size_t)args->width * view.cpp;
+	engine = m9_surface_engine_read && !write && !texture &&
+		 !view.captured_cpu_view &&
+		 (u64)args->height * row_bytes >= m9_surface_engine_min_bytes;
 	kbuf = kvmalloc_array(args->height, row_bytes, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
@@ -378,11 +568,19 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	}
 	if (!view.lock_cpu_view)
 		m9x_transport_drain_locked(mdev);
-	if (mdev->transport.wedged) {
+	if (mdev->transport.wedged)
 		ret = -EIO;
-	} else {
+	else if (engine)
+		ret = m9_surface_engine_read_locked(mdev, offset, args, &view,
+						    kbuf, row_bytes);
+	else
+		ret = -EOPNOTSUPP;
+	/* The engine either retired the copy or failed after posting it. */
+	if (ret == -EOPNOTSUPP) {
 		u32 surface = lower_32_bits(offset + args->offset);
+		u64 start = ktime_get_ns();
 
+		ret = 0;
 		if (view.captured_cpu_view) {
 			if (view.lock_cpu_view) {
 				ret = m9x_faa_lock_view_admit_locked(mdev, vram,
@@ -422,6 +620,12 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		if (write)
 			wmb();
 		m9x_address_surface_release(mdev);
+		if (!write) {
+			mdev->surface_stats.window_reads++;
+			mdev->surface_stats.window_bytes +=
+				(u64)args->height * row_bytes;
+			mdev->surface_stats.window_ns += ktime_get_ns() - start;
+		}
 	}
 out_transport:
 	mutex_unlock(&mdev->transport.lock);
@@ -468,6 +672,92 @@ int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
 		return -ENODEV;
 	ret = m9_surface_access(to_m9x(drm), file, data);
 	drm_dev_exit(idx);
+	return ret;
+}
+
+int m9x_surface_stats_show(struct m9x_device *mdev, struct seq_file *m)
+{
+	struct m9x_surface_read_stats st;
+	u32 ring;
+
+	mutex_lock(&mdev->transport.lock);
+	st = mdev->surface_stats;
+	ring = mdev->engine_read.words ? mdev->engine_read.bytes : 0;
+	mutex_unlock(&mdev->transport.lock);
+	seq_printf(m, "mode=%u min_bytes=%u ring_bytes=%u\n",
+		   m9_surface_engine_read, m9_surface_engine_min_bytes, ring);
+	seq_printf(m, "engine reads=%llu bytes=%llu batches=%llu chunks=%llu ns=%llu\n",
+		   st.engine_reads, st.engine_bytes, st.engine_batches,
+		   st.engine_chunks, st.engine_ns);
+	seq_printf(m, "window reads=%llu bytes=%llu ns=%llu\n",
+		   st.window_reads, st.window_bytes, st.window_ns);
+	seq_printf(m, "refused=%llu last=%d\n", st.refused, st.last_refusal);
+	return 0;
+}
+
+/* The encoder against a 320x240 target and its refusals. */
+static int m9_engine_read_selftest(void)
+{
+	struct m9x_engine_read_request req = {
+		.source = 0x00f01000, .descriptor0 = 0xcc210140,
+		.descriptor1 = 0x000100f0, .width = 320, .height = 240,
+		.fence_bus = 0x18d51000, .token = 0x30, .state = true,
+		.ring = { { 0x01001000, SZ_2M }, { 0x01202000, SZ_2M } },
+	};
+	u32 capacity = PARHELIA_M9_COMMAND_BYTES / sizeof(u32) / 2, *w, at;
+	struct m9x_engine_read_chunk *chunks;
+	struct m9x_engine_read_plan plan;
+	int ret = -EINVAL;
+
+	w = kcalloc(capacity, sizeof(*w), GFP_KERNEL);
+	chunks = kcalloc(capacity, sizeof(*chunks), GFP_KERNEL);
+	if (!w || !chunks) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	if (m9x_engine_read_encode(&req, w, capacity, chunks, capacity, &plan) ||
+	    plan.chunks != 8 || plan.rows != 240 || plan.pitch != 1280 ||
+	    plan.final != 0xe0 || w[0] != 0x4545451b || w[1] != 0x18d51002 ||
+	    w[plan.dwords - 1] != 0xe1)
+		goto out;
+	/* Copy setup follows the bank pair and the two serialising tokens. */
+	at = plan.dwords - 3 - 7 - 4 - 8 * M9X_ENGINE_READ_CHUNK_WORDS - 8;
+	if (w[at] != 0x7a7978f0 || w[at + 1] != 0x280c1c0c ||
+	    w[at + 2] != 0x00f01001 || w[at + 3] != 0xf0210140 ||
+	    w[at + 4] != 0x000100f0 || w[at + 6] != 0 ||
+	    w[at + 7] != 0xf0000140 || w[at + 9] != 0x01001002 ||
+	    w[at + 16] != 0x01202002 || w[at + 23] != 0x0100b002 ||
+	    w[at + 24] != 0x00400000 || w[at + 14] != 0x61 ||
+	    w[at + 8 + 7 * 7 + 3] != 0x00100140)
+		goto out;
+	req.y = 200;
+	req.height = 40;
+	req.state = false;
+	if (m9x_engine_read_encode(&req, w, capacity, chunks, capacity, &plan) ||
+	    plan.chunks != 2 || chunks[1].row != 32 || chunks[1].rows != 8 ||
+	    plan.dwords != 31 + 2 * M9X_ENGINE_READ_CHUNK_WORDS)
+		goto out;
+	req.descriptor0 = 0xd0210140;
+	if (m9x_engine_read_encode(&req, w, capacity, chunks, capacity,
+				   &plan) != -EINVAL)
+		goto out;
+	req.descriptor0 = 0xcc210140;
+	req.ring[1].bus |= 0x40;
+	if (m9x_engine_read_encode(&req, w, capacity, chunks, capacity,
+				   &plan) != -EINVAL)
+		goto out;
+	req.ring[1].bus &= ~0x40u;
+	if (m9x_engine_read_encode(&req, w, 31 + 6, chunks, capacity,
+				   &plan) != -ENOSPC)
+		goto out;
+	req.token = 0xffffffc0;
+	if (m9x_engine_read_encode(&req, w, capacity, chunks, capacity,
+				   &plan) != -ERANGE)
+		goto out;
+	ret = 0;
+out:
+	kfree(chunks);
+	kfree(w);
 	return ret;
 }
 
@@ -544,5 +834,5 @@ int m9x_surface_selftest(void)
 	if (!m9x_surface_layout_bytes(320, 240, 4, &size) || size != 0x50000 ||
 	    !m9x_surface_layout_bytes(1024, 768, 4, &size) || size != 0x301000)
 		return -EINVAL;
-	return 0;
+	return m9_engine_read_selftest();
 }

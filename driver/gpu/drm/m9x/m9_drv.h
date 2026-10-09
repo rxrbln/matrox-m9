@@ -28,6 +28,8 @@ struct drm_edid;
 struct drm_file;
 struct drm_mode_create_dumb;
 struct iosys_map;
+struct m9x_engine_read_chunk;
+struct seq_file;
 
 #define M9X_PCI_VENDOR			0x102b
 #define M9X_PCI_DEVICE_PHOENIX		0x0540
@@ -78,6 +80,26 @@ struct m9x_vram_bo {
 struct m9x_fence {
 	struct dma_fence base;
 	spinlock_t lock;
+};
+
+/* Two coherent DMA32 rings the engine copies surface rows into. */
+struct m9x_engine_read_staging {
+	void *cpu[2];
+	dma_addr_t bus[2];
+	u32 bytes;
+	u32 *words;
+	u32 capacity;
+	struct m9x_engine_read_chunk *chunks;
+	u32 max_chunks;
+	bool failed;
+};
+
+struct m9x_surface_read_stats {
+	u64 engine_reads, engine_bytes, engine_batches, engine_chunks;
+	u64 engine_ns;
+	u64 window_reads, window_bytes, window_ns;
+	u64 refused;
+	int last_refusal;
 };
 
 struct m9x_triangle_diag;
@@ -289,6 +311,9 @@ struct m9x_device {
 	struct m9x_transport transport;
 	/* Device-unique prepared-only FAA graph tokens; zero is never issued. */
 	atomic64_t faa_graph_next;
+	/* Engine surface readback staging and counters, under transport.lock. */
+	struct m9x_engine_read_staging engine_read;
+	struct m9x_surface_read_stats surface_stats;
 };
 
 static inline struct m9x_device *to_m9x(struct drm_device *drm)
@@ -707,6 +732,7 @@ int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
 void m9x_surface_read_locked(struct m9x_device *mdev, u32 offset, u32 d0,
 			     u32 d1, u8 *dst, size_t bytes);
 int m9x_surface_selftest(void);
+int m9x_surface_stats_show(struct m9x_device *mdev, struct seq_file *m);
 struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size);
 int m9x_vram_pin(struct drm_gem_vram_object *bo);

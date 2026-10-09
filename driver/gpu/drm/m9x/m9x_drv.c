@@ -217,6 +217,13 @@ static int m9_faa_dma_snapshot_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+static int m9_surface_read_stats_show(struct seq_file *m, void *unused)
+{
+	struct drm_debugfs_entry *entry = m->private;
+
+	return m9x_surface_stats_show(to_m9x(entry->dev), m);
+}
+
 static void m9x_debugfs_init(struct drm_minor *minor)
 {
 	drm_vram_mm_debugfs_init(minor);
@@ -224,6 +231,8 @@ static void m9x_debugfs_init(struct drm_minor *minor)
 			     m9_transport_snapshot_show, NULL);
 	drm_debugfs_add_file(minor->dev, "m9_faa_dma_snapshot",
 			     m9_faa_dma_snapshot_show, NULL);
+	drm_debugfs_add_file(minor->dev, "m9_surface_read_stats",
+			     m9_surface_read_stats_show, NULL);
 }
 
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */
