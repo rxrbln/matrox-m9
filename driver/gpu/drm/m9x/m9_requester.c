@@ -538,11 +538,13 @@ static int m9_queue_wait_head_locked(struct m9x_device *mdev)
 		m9_queue_observe_locked(mdev);
 		if (!t->queue_count || t->queue[t->queue_head].point != owner)
 			return 0;
-		if (++spins < M9_FENCE_SPIN_LIMIT) {
+		/* Jobs behind the head keep the engine busy, so after one spin
+		 * window the wait sleeps instead of polling again. */
+		if (spins < M9_FENCE_SPIN_LIMIT) {
+			spins++;
 			cpu_relax();
 			continue;
 		}
-		spins = 0;
 		if (ktime_get_ns() - start >=
 		    (u64)max(m9_fence_timeout_ms, 1u) * NSEC_PER_MSEC) {
 			t->wedged = true;
@@ -553,7 +555,10 @@ static int m9_queue_wait_head_locked(struct m9x_device *mdev)
 				READ_ONCE(((u32 *)t->fence_cpu)[0]));
 			return -ETIMEDOUT;
 		}
-		usleep_range(10, 30);
+		if (t->queue_count == M9_QUEUE_SLOTS)
+			usleep_range(50, 100);
+		else
+			usleep_range(10, 30);
 	}
 }
 
