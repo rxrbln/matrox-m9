@@ -654,17 +654,30 @@ passing in the same run.  The whole `m9-mesa-glsl` suite is 276 of 276.
 
 ### 12.6 A level of 64 columns or less that is too tall for the small kind
 
-`dxt1:64x128` and `dxt1:32x128` do **not** sample correctly, with or without
-a chain: 15 of every 16 pixels are wrong at 64 columns and 7 of every 8 at
-32.  Such a level's height puts it past the small storage kind, and the tiled
-kind does not address a surface that narrow the way the window writes it.
-Padding the window span to 64 columns does not help.
+`dxt1:64x128` and `dxt1:32x128` do **not** sample correctly when they are
+written through the tiled kind: 15 of every 16 pixels are wrong at 64
+columns, and 7 of every 8 at 32 (MEASURED).  The emulated vendor layout
+explains why (`captures/m9-vendor-dxt-layout-20261009`, 2026-10-09).  The
+vendor stores both levels through the **small** kind, because the small kind
+reaches a span of 64 and up to 256 bytes of blocks per column: 128 texel rows
+for DXT1 and 64 for DXT2..5.  DXT1 64x129, 32x144 and 16x144 and DXT3 64x65
+are tiled, and the vendor's aperture view of a narrow tiled level such as
+DXT3 64x69 is `2a21 0040` / `0001 0060`.  The chain offsets of section 12.5
+follow once the small kind uses this limit.  A 257x277 DXT1 chain advances
+by `0xa00` past its 64x69 level, not `0x1000`.
 
-The Gallium driver refuses that level, and names it, rather than sampling it
-wrong.  This is the one compressed shape known not to work; it is not a
-mip-chain property and no single-level fixture covered it either.  Closing it
-needs a sweep of the window span and storage kind for a tall narrow level,
-which nothing in the captures constrains.
+Mesa m9x f499643 uses that limit and no longer refuses a narrow tiled level.
+The kernel window admits the taller small kind only with drm 927f76a (pending
+approval).  Until then, a DXT1 level of 65..128 rows at a span of 64 or less
+is refused cleanly ("cannot be stored (-22)") and the sampler is clamped
+below it.
+
+The sampler descriptor carries the **logical** extent, not the extent rounded
+to whole blocks (Mesa m9x bccb095, MEASURED).  The sampler derives every
+level from it, so a 257x277 chain read as 260x280 put level 1 at 130 columns
+and a 192-texel pitch, while the chain stores it 128 wide.
+`dxtmip3/5:257x277`, `dxtmip3:130x70` and `dxtmip1:66x34` are pixel-exact at
+every level with the logical extent and fail with the rounded one.
 
 ### 12.7 The kernel module has to match this tree
 
@@ -683,4 +696,5 @@ this tree.
 * Cube faces and volume slices, which section 11 also lists.
 * `79[24]`: the driver leaves it clear and everything above works.
 * sRGB decode, which has no recovered encoding for this sampler.
-* The narrow-tall level of section 12.6.
+* The narrow-tall DXT1 level of section 12.6 on the card (needs the kernel
+  change).

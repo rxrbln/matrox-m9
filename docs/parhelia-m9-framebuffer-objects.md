@@ -73,6 +73,22 @@ pbo.
   framebuffer 0, the never-drawn window, instead of piglit_winsys_fbo); it
   passes on llvmpipe in window mode. FBO-to-FBO blits are exact on the M9
   (blitprobe: unscaled, stretched, flipped, full).
-* fbo-fragcoord2 (gl_FragCoord with gl_FrontFacing), texwrap of depth
-  formats, s3tc mipmap levels that cannot be stored, fbo-pbo-readpixels-small
-  (uses DEPTH_COMPONENT32F without requiring ARB_depth_buffer_float).
+* texwrap of depth formats, fbo-pbo-readpixels-small (uses
+  DEPTH_COMPONENT32F without requiring ARB_depth_buffer_float).
+
+## Closed by m9fbo5 (2026-10-09)
+
+* fbo-fragcoord2 PASS in FBO and window (MEASURED, Mesa m9x 478facb).  The
+  emulated vendor compiler reads `7b` twice in one program, once with the
+  facing select and once with the z select
+  (`captures/m9x-vendor-glsl-fragcoord-facing-20261009`), so the refusal of
+  gl_FragCoord beside gl_FrontFacing had no basis.  The generic
+  gl_FragCoord path also carried z in the wrong operand.
+* S3TC fbo-generatemipmap-formats (s3tc, arb_texture_compression,
+  sRGB-s3tc) PASS (MEASURED, f499643 + bccb095): the vendor's small-kind
+  column limit and the logical sampler extent (s3tc doc 12.6).  The DXT1 64x69
+  level still needs drm 927f76a.  Without it the level is refused cleanly,
+  and piglit does not probe it.
+* Open: gl_FragCoord.z/w from `7b` read about (1, 1) in FBOs and (0, 0) in
+  the window (glsl-fs-fragcoord-zw-*, fragcoord_w; failing since 10-02).  The
+  vendor's own fs-fragcoord capture reads z = 0 too.
