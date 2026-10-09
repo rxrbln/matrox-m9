@@ -273,16 +273,17 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    case PIPE_TEXTURE_3D:
       /* A cube face and a volume slice are stored only by the tiled texture
        * calculator: there is no captured render, depth or scanout placement
-       * for either, and the kernel texture window addresses a plane.  st
-       * asks for RENDER_TARGET speculatively, and without retrying, for the
-       * formats GL requires (GL_RGBA with a packed 4444/5551/8888 type), so
-       * accept the bind; m9_update_target refuses a face or slice as a
-       * target. */
+       * for either, and the kernel texture window addresses a plane, so a
+       * face or slice renders through a proxy surface (m9_update_target).
+       * A depth cube is stored the same way, its faces rendered through the
+       * depth proxy. */
       if (bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR |
-                   PIPE_BIND_RENDER_TARGET))
+                   PIPE_BIND_RENDER_TARGET |
+                   (target == PIPE_TEXTURE_CUBE ? PIPE_BIND_DEPTH_STENCIL : 0)))
          return false;
       if (!m9_texture_format(format, NULL) ||
-          util_format_is_depth_or_stencil(format))
+          (util_format_is_depth_or_stencil(format) &&
+           target != PIPE_TEXTURE_CUBE))
          return false;
       break;
    default:
@@ -557,9 +558,10 @@ m9_resource_create(struct pipe_screen *pscreen,
          M9_RESOURCE_LINEAR_DEPTH :
          (templ->bind & PIPE_BIND_RENDER_TARGET) && !templ->last_level &&
          !layered ? M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
-      /* A mipmapped depth image is a sampler source only, like a
-       * mipmapped colour one: store the chain as a texture. */
-      if (resource->kind == M9_RESOURCE_LINEAR_DEPTH && templ->last_level)
+      /* A mipmapped or cube depth image is a sampler source, like a
+       * mipmapped colour one: store it as a texture. */
+      if (resource->kind == M9_RESOURCE_LINEAR_DEPTH &&
+          (templ->last_level || layered))
          resource->kind = M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
