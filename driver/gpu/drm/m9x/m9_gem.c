@@ -50,8 +50,8 @@ static bool m9_vram_free_for(struct m9x_device *mdev, u64 size)
 }
 
 /*
- * Only the submit ioctl reads a command object (into its validated copy), so
- * write-back backing spares it uncached reads of the whole stream.
+ * The submit ioctl reads each command object into its validated copy.
+ * Coherent backing avoids uncached CPU reads while retaining DMA access.
  */
 static bool m9_bo_command_cached = true;
 module_param(m9_bo_command_cached, bool, 0400);
