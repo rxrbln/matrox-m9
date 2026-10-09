@@ -623,6 +623,8 @@ struct m9_native_image {
 struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
+   /* Non-owning: draw's raster stage owns/destroys the CPU vbuf renderer. */
+   struct vbuf_render *cpu_render;
    /* Free staging buffers, reused so each upload does not fault in and zero
     * fresh pages; bounded by M9_STAGING_KEEP bytes in all. */
    void *staging_free[M9_STAGING_CACHED];

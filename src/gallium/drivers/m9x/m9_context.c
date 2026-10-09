@@ -215,6 +215,7 @@ struct m9_vbuf_render {
    /* Diagnostic identity of the immutable layout used by draw's translator. */
    uint32_t layout_program;
    unsigned layout_passes;
+   uint8_t layout_location[M9_FS_MAX_EXTRA];
    /* One per CPU view of the whole variant, not of one pass: a split
     * shader has a view per interpolated input and per coordinate stream of
     * every pass, which a one-pass bound is eight short of. */
@@ -6266,6 +6267,7 @@ m9_render_get_vertex_info(struct vbuf_render *render)
 
       r->layout_program = v->c2.handle;
       r->layout_passes = v->passes.count;
+      memcpy(r->layout_location, v->extra_location, v->extra_count);
 
       for (unsigned j = 0; j < v->extra_count; j++) {
          unsigned location = v->extra_location[j];
@@ -6655,7 +6657,8 @@ m9_render_drop(struct m9_context *ctx, const char *why)
  * changing admission, record ownership or draw's prepared translation. */
 static void
 m9_render_record_drop(struct m9_vbuf_render *r, const struct m9_job_key *key,
-                       unsigned vertices, const float *out, const float *extra)
+                       unsigned vertices, const float *out, const float *extra,
+                       bool layout_mismatch)
 {
    struct m9_context *ctx = r->ctx;
    const struct m9_fs_variant *v = key->variant;
@@ -6667,7 +6670,7 @@ m9_render_record_drop(struct m9_vbuf_render *r, const struct m9_job_key *key,
               "current c2 %u passes %u extras %u native_vs %d extra_reserved %d "
               "records_bytes %zu extra_bytes %zu draws %u lost %d "
               "inline_owner %d count %u listed %u\n",
-              !out ? "reserve" : "layout", vertices,
+              layout_mismatch ? "layout" : "reserve", vertices,
               m9_draw_preprocess_vertices(vertices), m9_job_max_vertices(key),
               r->layout_program, r->layout_passes, r->extra_count,
               r->vertex_size, r->vinfo.size, r->has_color,
@@ -6684,6 +6687,43 @@ m9_render_record_drop(struct m9_vbuf_render *r, const struct m9_job_key *key,
                  v && j < v->extra_count ? v->extra_location[j] : -1);
    }
    m9_render_drop(ctx, "a job could not take a draw's records; draws skipped");
+}
+
+static bool
+m9_render_layout_matches(const struct m9_vbuf_render *r,
+                          const struct m9_fs_variant *v)
+{
+   unsigned count = v ? v->extra_count : 0;
+
+   return r->extra_count == count &&
+          (!count || !memcmp(r->layout_location, v->extra_location, count));
+}
+
+static void
+m9_render_refresh_layout(struct m9_context *ctx, const struct m9_fs_variant *v)
+{
+   if (ctx->cpu_render &&
+       !m9_render_layout_matches(m9_vbuf_render(ctx->cpu_render), v)) {
+      /* Rebinding invalidates draw's prepared frontend, rather than only
+       * flushing backend primitives. Its next prepare rebuilds the vinfo
+       * and translate key before any new vertex is emitted. */
+      draw_bind_fragment_shader(ctx->draw, ctx->fs ? ctx->fs->draw : NULL);
+   }
+}
+
+static bool
+m9_render_layout_ready(struct m9_vbuf_render *r, const struct m9_job_key *key,
+                        unsigned vertices)
+{
+   /* Extra views are consumed only by a CPU fragment job which needs them.
+    * Reserve may flush or defer the old job, so refuse an incompatible
+    * translation before it mutates any pending arrays or retained owners.
+    * Both the prepared layout and variant stay immutable through reserve. */
+   if (!key->variant || key->vs || !key->variant->extra_count ||
+       m9_render_layout_matches(r, key->variant))
+      return true;
+   m9_render_record_drop(r, key, vertices, NULL, NULL, true);
+   return false;
 }
 
 /* An index list preprocesses the vertices it spans once and rasterises them
@@ -6725,8 +6765,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
          }
          out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL,
                               M9_RECORD_FLOATS, grain, &first, &extra);
-         if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-            m9_render_record_drop(r, key, grain, out, extra);
+         if (!out) {
+            m9_render_record_drop(r, key, grain, out, extra, false);
             return;
          }
          index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
@@ -6767,8 +6807,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
       vertices = hi - lo + 1;
       out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL, M9_RECORD_FLOATS,
                            vertices, &first, &extra);
-      if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_record_drop(r, key, vertices, out, extra);
+      if (!out) {
+         m9_render_record_drop(r, key, vertices, out, extra, false);
          return;
       }
       /* An odd run is padded to a whole dword so every run stays aligned,
@@ -6828,6 +6868,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    unsigned grain = topology == M9_TOPOLOGY_TRIANGLES ? 3 :
                     topology == M9_TOPOLOGY_LINES ? 2 : 1;
 
+   if (!m9_render_layout_ready(r, key, count))
+      return;
    if (indices && m9_indexed_draws) {
       m9_render_append_indexed(r, key, topology, lines, cull, indices,
                                index_size, count);
@@ -6848,8 +6890,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
       float *out = m9_job_reserve(r->ctx, key, &r->ctx->key_consts, NULL,
                                   M9_RECORD_FLOATS, n, &first, &extra);
 
-      if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_record_drop(r, key, n, out, extra);
+      if (!out) {
+         m9_render_record_drop(r, key, n, out, extra, false);
          return;
       }
       for (unsigned i = 0; i < n; i++) {
@@ -7151,6 +7193,8 @@ m9_render_destroy(struct vbuf_render *render)
 {
    struct m9_vbuf_render *r = m9_vbuf_render(render);
 
+   if (r->ctx->cpu_render == render)
+      r->ctx->cpu_render = NULL;
    util_dynarray_fini(&r->indices);
    util_dynarray_fini(&r->quads);
    free(r->vertices);
@@ -7165,6 +7209,7 @@ m9_render_create(struct m9_context *ctx)
    if (!r)
       return NULL;
    r->ctx = ctx;
+   ctx->cpu_render = &r->base;
    /* A draw's vertices must fit the transient stream views. */
    r->base.max_indices = m9_draw_max_source_vertices();
    r->base.max_vertex_buffer_bytes =
@@ -8555,6 +8600,15 @@ m9_module_draw(struct pipe_context *pctx, const struct pipe_draw_info *info,
 {
    struct m9_context *ctx = m9_context(pctx);
    bool indexed = info->index_size;
+   const struct m9_fs_variant *variant = NULL;
+   const char *reason;
+
+   /* Uniform/view/blend variants can change while draw keeps its frontend.
+    * Check the actual CPU stream layout outside the callback which emits
+    * translated records; rebinding there would be too late. */
+   if (m9_fs_use_native(ctx))
+      variant = m9_ctx_variant(ctx, &reason, NULL);
+   m9_render_refresh_layout(ctx, variant);
 
    /* Native vertex fetches retain the GPU image directly. Only the draw
     * module needs a synchronized linear CPU copy of its sampled inputs. */
