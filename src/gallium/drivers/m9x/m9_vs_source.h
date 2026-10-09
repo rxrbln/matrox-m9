@@ -154,13 +154,16 @@ struct m9_vs_clip_bounds {
    float lo[4], hi[4];
 };
 
-/* The bounds kept with a vertex buffer, one entry per recently used
- * element layout.  The lock serialises contexts sharing the buffer; a
- * zeroed box is ready to use. */
+/* Keep ranges as well as layouts: world surfaces can share one static VBO
+ * while drawing many disjoint ranges each frame.  Two entries can evict
+ * their bounds before the next frame and rescan unchanged positions.
+ * The bounded cache still validates every entry against the live generation.
+ * Its lock serialises contexts sharing the buffer; a zeroed box is ready. */
+#define M9_VS_CLIP_BOX_RANGES 64u
 struct m9_vs_clip_box {
    simple_mtx_t lock;
    uint64_t clock;
-   struct m9_vs_clip_bounds entry[2];
+   struct m9_vs_clip_bounds entry[M9_VS_CLIP_BOX_RANGES];
 };
 
 /* A vertex buffer's box with its current content generation; an entry
