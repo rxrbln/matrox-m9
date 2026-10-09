@@ -712,6 +712,31 @@ void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file)
 	m9x_faa_idle_wake(to_m9x(drm));
 }
 
+/* An ordinary submit from the file whose own graph holds the cursor cannot
+ * wait for that graph: only this file's next graph call would end the
+ * wait. It fails at once instead.
+ */
+bool m9x_faa_graph_blocks_own_file(struct m9x_device *mdev,
+				   struct drm_file *file)
+{
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_graph_binding *binding;
+	bool blocked = false;
+
+	if (!state)
+		return false;
+	mutex_lock(&state->lock);
+	if (state->graph) {
+		mutex_lock(&mdev->transport.lock);
+		binding = m9x_faa_graph_bound_locked(mdev);
+		blocked = binding && binding->graph == state->graph &&
+			  m9x_faa_ordinary_blocked_locked(mdev);
+		mutex_unlock(&mdev->transport.lock);
+	}
+	mutex_unlock(&state->lock);
+	return blocked;
+}
+
 bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding)
 {
 	return binding && READ_ONCE(binding->graph->released);

@@ -1542,6 +1542,8 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	 * retires: the point of posting without waiting is that the next job
 	 * is built while this one still reads them.
 	 */
+	if (!ret && execute && m9x_faa_graph_blocks_own_file(mdev, file))
+		ret = -EBUSY;
 	if (!ret && execute)
 		ret = m9_submit_execute(mdev, image, expected, dwords,
 					&args->out_point,

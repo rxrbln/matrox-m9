@@ -11755,6 +11755,17 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 #endif
 }
 
+/* The binding of the graph that holds the retained primary, if any. */
+struct m9_faa_graph_binding *m9x_faa_graph_bound_locked(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	return mdev->transport.faa ? mdev->transport.faa->graph_binding : NULL;
+#else
+	return NULL;
+#endif
+}
+
 /* Whether the graph owns the cursor now; see m9x_faa_ordinary_wait(). */
 bool m9x_faa_ordinary_blocked_locked(struct m9x_device *mdev)
 {
