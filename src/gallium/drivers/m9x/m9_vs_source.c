@@ -358,7 +358,8 @@ m9_vs_compile_native_source(nir_shader **nir, struct m9_vs_program *program,
    bool ok = m9_vs_compile_gate_source(nir, NULL, program, &why, max_slots,
                                         max_const_pairs, format_key, gates,
                                         gate_key);
-   if (!ok && why && !strcmp(why, "more than five varyings")) {
+   if (!ok && why && (!strcmp(why, "more than five varyings") ||
+                     !strcmp(why, "more than four vertex attributes"))) {
       const struct m9_vs_outputs position_only = {0};
       ok = m9_vs_compile_gate_source(nir, &position_only, program, &why,
                                       max_slots, max_const_pairs, format_key,

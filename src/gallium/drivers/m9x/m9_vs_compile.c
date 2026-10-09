@@ -3266,6 +3266,64 @@ seed_constants(struct ctx *c, const struct const_seed *seed)
    return true;
 }
 
+/* Compile only the roots this ordinary output layout publishes, while the
+ * caller retains the complete source for later layouts.  The input mask is
+ * still the original GL element inventory, not the clone's compact subset. */
+static nir_shader *
+selected_source(nir_shader *nir, const struct m9_vs_outputs *outputs,
+                uint64_t *manifest)
+{
+   uint64_t wanted = 0, seen = 0;
+   bool prune = false;
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+
+   if (!outputs || outputs->count > M9_VS_MAX_VARYINGS || !impl ||
+       exec_list_length(&impl->body) != 1)
+      return NULL;
+   for (unsigned i = 0; i < outputs->count; i++) {
+      const struct m9_vs_output *o = &outputs->stream[i];
+      if (o->location >= 64 || (o->paired && o->pair_location >= 64))
+         return NULL;
+      wanted |= BITFIELD64_BIT(o->location);
+      if (o->paired)
+         wanted |= BITFIELD64_BIT(o->pair_location);
+   }
+   nir_foreach_instr(instr, nir_start_block(impl)) {
+      if (instr->type != nir_instr_type_intrinsic)
+         continue;
+      nir_intrinsic_instr *i = nir_instr_as_intrinsic(instr);
+      if (i->intrinsic != nir_intrinsic_store_output)
+         continue;
+      unsigned location = nir_intrinsic_io_semantics(i).location;
+      if (!nir_src_is_const(i->src[1]) || nir_src_as_uint(i->src[1]) ||
+          location >= 64 || (seen & BITFIELD64_BIT(location)))
+         return NULL; /* Keep malformed-store refusals on the original path. */
+      seen |= BITFIELD64_BIT(location);
+      if (location == VARYING_SLOT_POS || location == VARYING_SLOT_PSIZ ||
+          (location >= VARYING_SLOT_CLIP_DIST0 &&
+           location <= VARYING_SLOT_CULL_DIST1))
+         continue;
+      *manifest |= BITFIELD64_BIT(location);
+      prune |= !(wanted & BITFIELD64_BIT(location));
+   }
+   if (!prune)
+      return NULL;
+   nir_shader *copy = nir_shader_clone(NULL, nir);
+   if (!copy)
+      return NULL;
+   nir_foreach_instr_safe(instr, nir_start_block(nir_shader_get_entrypoint(copy))) {
+      if (instr->type != nir_instr_type_intrinsic)
+         continue;
+      nir_intrinsic_instr *i = nir_instr_as_intrinsic(instr);
+      if (i->intrinsic == nir_intrinsic_store_output &&
+          (*manifest & BITFIELD64_BIT(nir_intrinsic_io_semantics(i).location)) &&
+          !(wanted & BITFIELD64_BIT(nir_intrinsic_io_semantics(i).location)))
+         nir_instr_remove(instr);
+   }
+   NIR_PASS(_, copy, nir_opt_dce);
+   return copy;
+}
+
 static bool
 compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                 struct m9_vs_program *p, const char **reason,
@@ -3276,6 +3334,12 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    nir_function_impl *impl;
    struct ctx c;
    bool ok;
+   uint64_t manifest = 0, source_inputs = nir->info.inputs_read;
+   nir_shader *selected = !faa && !sampled_position ?
+                         selected_source(nir, outputs, &manifest) : NULL;
+
+   if (selected)
+      nir = selected;
 
    memset(&c, 0, sizeof(c));
    memset(p, 0, sizeof(*p));
@@ -3306,6 +3370,10 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
         (impl ? compile_impl(&c, impl, outputs) :
                 fail(&c, "not a vertex shader"));
    if (ok) {
+      if (selected) {
+         p->written_outputs = manifest;
+         p->inputs_read = source_inputs;
+      }
       p->faa_preprocess = faa;
       p->faa_dual_three = faa_dual_three;
       util_dynarray_foreach(&c.keys, struct kkey, k) {
@@ -3332,6 +3400,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    free(c.fold);
    if (!ok)
       m9_vs_program_fini(p);
+   ralloc_free(selected);
    return ok;
 }
 
