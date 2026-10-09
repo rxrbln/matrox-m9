@@ -6,12 +6,18 @@
 #include "m9_wait_uapi.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 
 #include "util/macros.h"
+#include "util/u_debug.h"
+
+DEBUG_GET_ONCE_BOOL_OPTION(m9_aggregate_trace, "M9X_AGGREGATE_TRACE", false)
+static unsigned m9_aggregate_trace_posts;
 
 static uint32_t
 m9_align(uint32_t value, uint32_t alignment)
@@ -840,6 +846,24 @@ m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
    *out_point = submit.out_point;
    m9_bo_points_note_refs(screen, batch->bos, batch->bo_count,
                           submit.out_point);
+   /* A real accepted multi-job ioctl, not a logical enqueue or an issued
+    * point mistaken for retirement. Bound diagnostic output per process. */
+   if ((submit.flags & PARHELIA_M9_SUBMIT_AGGREGATE) &&
+       debug_get_option_m9_aggregate_trace() &&
+       p_atomic_read_relaxed(&m9_aggregate_trace_posts) < 64) {
+      unsigned n = p_atomic_inc_return(&m9_aggregate_trace_posts);
+
+      if (n <= 64) {
+         int saved_errno = errno;
+
+         fprintf(stderr, "m9x: aggregate post %u jobs %u words %u relocs %u "
+                 "bos %u flags %#x issued %#" PRIx64 "\n", n,
+                 batch->aggregate_jobs, batch->command_count,
+                 batch->reloc_count, batch->bo_count, submit.flags,
+                 (uint64_t)submit.out_point);
+         errno = saved_errno;
+      }
+   }
    return 0;
 }
 
