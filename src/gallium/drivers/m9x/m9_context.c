@@ -7356,6 +7356,34 @@ m9_vs_fused_pair(const struct m9_vs_program *p)
    return p->varying_count > 1 && m9_native_vs_varyings > 1;
 }
 
+/* The retained fragment image publishes every pass in entry[] order.  A
+ * native image replaces only its vertex suffix, not that complete prefix.
+ * Check the live source/owner joins before cached native images are used. */
+static bool
+m9_native_fs_prefix(const struct m9_fs_variant *v,
+                     const uint32_t **data, unsigned *count)
+{
+   unsigned slots = 0;
+
+   if (!v || !v->passes.count || v->passes.count > M9_FS_MAX_PASSES ||
+       !v->c2.handle || !v->c2.map)
+      return false;
+   for (unsigned i = 0; i < v->passes.count; i++) {
+      const struct m9_fs_program *p = &v->passes.pass[i];
+      unsigned n = m9_fs_slot_count(p);
+
+      if (!n || p->slots.size % (2 * sizeof(uint32_t)) || !p->slots.data ||
+          v->entry[i] != slots || n > M9_PROGRAM_MAX_BYTES / 8u - slots)
+         return false;
+      slots += n;
+   }
+   if (v->vertex_entry != slots || 8ull * slots > v->c2.size)
+      return false;
+   *data = v->c2.map;
+   *count = slots;
+   return true;
+}
+
 
 /* The c2 image a native preprocessing job binds: the fragment slots the
  * raster pass enters, with the compiled vertex program behind them instead
@@ -7371,11 +7399,12 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
    struct m9_resource fresh = {0};
    struct util_dynarray *images = v ? &v->native_c2_images : &ctx->vs_c2_images;
    uint64_t *serial = v ? &v->native_c2_serial : &ctx->vs_c2_serial;
-   const uint32_t *fs_slots = v ? m9_fs_final(v)->slots.data :
-                                  m9_passthrough_c2_program;
-   unsigned fs_slots_count = v ? m9_fs_slot_count(m9_fs_final(v)) :
-                                 M9_PASSTHROUGH_FS_SLOTS;
+   const uint32_t *fs_slots = m9_passthrough_c2_program;
+   unsigned fs_slots_count = M9_PASSTHROUGH_FS_SLOTS;
    unsigned entry = 0, extra = 0, gather = 0, producer = 0;
+
+   if (v && !m9_native_fs_prefix(v, &fs_slots, &fs_slots_count))
+      return 0;
    uint64_t bytes = align64(8ull * (fs_slots_count +
                                     m9_vs_slot_count(&vs->program) +
                                     m9_vs_extra_slot_count(&vs->program) +
