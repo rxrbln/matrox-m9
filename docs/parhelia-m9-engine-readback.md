@@ -76,14 +76,38 @@ re-runs sequence0. The readback restores what Mesa does not restate
 | glmark2 terrain on the pre-0603cd3 DSO (per-frame readback) | transfer 1760 ms/frame (mode 0) -> 97.6 ms/frame (mode 1) |
 | ordinary rendering after mode 1 | correct (later fixtures, piglit, terrain) |
 
-Mode 2 is kept only as a diagnostic. The default stays 0 until a full piglit
-core run with `surface_engine_read=1`.
+Mode 2 is kept only as a diagnostic.
 
-## Next
+## Defaults (MEASURED 2026-10-09, DRM f991c88, Mesa fe34230)
 
-* Default mode 1 after the core run.
-* Engine zero fill of the back-end object (the CPU memset through BAR costs
-  refract 110, terrain 204, desktop blur 6-9 ms a frame) as a rectangle in the
-  same 2-D context, posted as a queued kernel stream.
-* Engine texture upload on the same plumbing (`streaming-texture-leak`: 5000
-  1024x1024 uploads at ~150 MB/s through the window).
+`surface_engine_read=1` and `bo_fill=1` are the kernel defaults; Mesa takes
+the engine clear (`M9X_BE_ENGINE_CLEAR`, opt-out with `=0`) where the
+kernel's `BO_FILL` QUERY admits it. With all three on, piglit core gave
+284 PASS / 1 FAIL on main 39eede8, with no failure not also on the window path,
+and all 33 glmark2 captures match llvmpipe.
+
+## Engine zero fill of the back-end object (`BO_FILL`)
+
+A queued kernel stream: serialisation, the 2-D context, then the vendor's
+unlock-download copy form from a kernel-owned zeroed VRAM source into the
+range bound as a linear kind-00 colour target 0 (`f0 = 280c040c`, span 1024,
+negative `fc` extent, one launch per 512 rows), the 0x600 bank restore and the
+ordinary completion footer; the fence goes on the object's reservation.
+MEASURED: the conv fixtures and both `splitdesk` cases (which stall without a
+working clear) pass; glmark2 desktop blur 38 -> 44 fps, refract 401 -> 309 ms
+a frame (back-end clear 113 -> 5 ms), terrain 810 -> 630 ms (207 -> 16 ms).
+
+## Engine upload (`surface_engine_write`, default 0)
+
+The vendor memup form: data in a coherent staging buffer published through
+class-1 leaves, unit 0 = staging `VA|1` kind 00 format 0x78, destination
+colour target 0 kind 21/01, `f0 = 080c040c`. MEASURED: correct (fixtures
+exact, piglit upload subset 21 PASS / 0 FAIL); the linear source works in
+the 2-D rectangle path although ordinary linear sampling does not (E2).
+Not faster end to end: `streaming-texture-leak` (5000 x 4 MiB) took 155.6 s
+against 138.0 s on the window path; the copy itself is 6.7 ms per upload
+(629 MB/s), but the test is bound by staging churn, not the BAR (perf: memmove,
+page-fault zeroing, `copy_from_user`). Mesa eef7538 reuses transfer staging
+per context: 138.5 -> 97.6 s on the window path (engine upload 116.2 s), so
+the upload stays off. Next small win: a reusable kernel ioctl buffer (the
+kvmalloc'd buffer is zeroed and vmapped per call, 14% of samples).
