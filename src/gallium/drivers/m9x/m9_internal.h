@@ -347,6 +347,7 @@ struct m9_screen {
    bool wait_point;
    bool aggregate_submit;    /* explicit opt-in plus kernel capability */
    bool queued_submit;       /* typed kernel admission unless M9X_QUEUE=0 */
+   bool bo_fill;             /* M9X_BE_ENGINE_CLEAR plus kernel BO_FILL */
    /* Actual successful WAIT_POINT observations, shared by contexts and
     * presentation fences. Posting a command never advances this value. */
    p_atomic_uint64_t completed_point;

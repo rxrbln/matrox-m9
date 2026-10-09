@@ -24,6 +24,7 @@
 #include "draw/draw_context.h"
 #include "m9_batch.h"
 #include "m9_wait_uapi.h"
+#include "m9_fill_uapi.h"
 #include "m9_format.h"
 #include "m9_internal.h"
 #include "m9_vs_texture.h"
@@ -1429,6 +1430,14 @@ m9_probe_user_submit(struct m9_screen *screen)
                debug_get_bool_option("M9X_AGGREGATE", false) &&
                !ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &aggregate_probe) &&
                !aggregate_probe.out_point;
+            /* M9X_BE_ENGINE_CLEAR=1 zeroes back-end objects by the kernel's
+             * queued engine copy, where its bo_fill parameter admits it. */
+            struct drm_parhelia_m9_bo_fill fill_probe = {
+               .flags = PARHELIA_M9_BO_FILL_QUERY,
+            };
+            screen->bo_fill =
+               debug_get_bool_option("M9X_BE_ENGINE_CLEAR", false) &&
+               !ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_BO_FILL, &fill_probe);
             const struct m9_packet_value bias[] = {
                { .index = 0xd0, .value = 0 },
                { .index = 0xd1, .value = 0 },

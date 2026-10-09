@@ -38,6 +38,7 @@
 #include "m9_indirect.h"
 #include "m9_faa_application.h"
 #include "m9_faa_graph_uapi.h"
+#include "m9_fill_uapi.h"
 #include "m9_vs_texture.h"
 #include "m9_weld.h"
 #include "m9_vs_source.h"
@@ -3281,6 +3282,27 @@ m9_wc_zero(void *dst, size_t bytes)
    memset(dst, 0, bytes);
 }
 
+/* M9X_BE_ENGINE_CLEAR=1: the kernel zeroes the span by an engine copy it
+ * queues behind every job posted before, which is what the wait below
+ * establishes for the CPU clear.  Its point becomes the object's last
+ * owner; the job that binds the object is posted behind it. */
+static bool
+m9_be_engine_zero(struct m9_context *ctx, struct m9_resource *be)
+{
+   struct drm_parhelia_m9_bo_fill fill = {
+      .handle = be->handle,
+      .size = (m9_be_clear_span(ctx, be) + 0xfff) & ~0xfffull,
+   };
+
+   if (!ctx->screen->bo_fill || !be->handle || !fill.size ||
+       fill.size > be->size ||
+       ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_BO_FILL, &fill) ||
+       !fill.out_point)
+      return false;
+   be->be_point = fill.out_point;
+   return true;
+}
+
 static void
 m9_be_zero(struct m9_context *ctx)
 {
@@ -3303,6 +3325,14 @@ m9_be_zero(struct m9_context *ctx)
    if (entry && m9_be_swap)
       selected = m9_be_victim(ctx, entry);
    be = entry ? &m9_be_slot_at(entry, selected)->be : &ctx->be;
+   /* Any refusal leaves the CPU clear below. */
+   if (m9_be_engine_zero(ctx, be)) {
+      if (entry)
+         m9_be_select(ctx, entry, selected);
+      m9_be_shape_slot(ctx)->valid = false;
+      m9_prof_end(M9_PROF_BE, t_be);
+      return;
+   }
    /* A queued reader can still use any object. Wait for the selected
     * owner's actual last submit, not the context's newer unrelated work.
     * Pending CPU draw/held-job states have no BE binding: submit_job chooses
