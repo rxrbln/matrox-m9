@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright 2026 René Rebe <rene@exactco.de>
+/*
+ * The vendor 2-D blit context the engine copy and fill run in (MxMD.dll
+ * DdBlt, emulated; the same block precedes the video->system readback and
+ * the system->video upload).  What is captured here is code: the 2-D
+ * fragment program and its constants.  Everything else is an encoding
+ * constant named below or a value the caller derives (tokens).
+ */
+#include <linux/array_size.h>
+#include <linux/errno.h>
+#include <linux/stddef.h>
+#include "m9_engine_2d_state.h"
+#include "m9_hw_encode.h"
+
+/*
+ * On-chip program words, loaded two at a time at 8f=0x80000000+0x40*block
+ * into 90..9f; 0xb5e70 emits them in this order, 8 pairs a block.
+ */
+static const u32 m9_engine_2d_program[] = {
+	0xe63f291d, 0xf2fe014f, 0xe6bf291e, 0xb2fe014f, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0xe63f0a1c, 0xb2fe014f, 0xe6bf0b1c, 0xb2fe014f,
+	0xe2bf861c, 0xa2deb14f, 0xe2ff871c, 0xa2deb14f, 0xe63f881c, 0xe2de817f,
+	0xe6bf891c, 0xa2de817f, 0xc23fa91d, 0xaedffd70, 0xe27fa91e, 0xaedffd70,
+	0x063fa91d, 0xeeff8140, 0x46bfa91e, 0xaeff8140, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x063f841c, 0xaeff8140, 0x46bf851c, 0xaeff8140,
+	0xe13f861c, 0xa2deb14f, 0xe17f871c, 0xa2deb14f, 0xe63f881c, 0xe2de817f,
+	0xe6bf891c, 0xa2de817f, 0xc23fa91d, 0xaedffd70, 0xe27fa91e, 0xaedffd70,
+	0xffff911c, 0xee80831f, 0xffff931c, 0xae80c31f, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0xe03c049c, 0xf37e415f, 0xe0bc059c, 0xb37e415f,
+	0x863fa91d, 0xaeff8140, 0xa6bfa91e, 0xaeff8140, 0xffff841c, 0xae9e031f,
+	0x1fff839c, 0xefdfc100, 0x5fff8c9c, 0xafdfc100, 0x863fa91d, 0xaeff8140,
+	0x86bfa91e, 0xaeff8140, 0xffc0111c, 0xee9fcf1f, 0xffc1131c, 0xae9fcf1f,
+	0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xe03f841c, 0xa2de714f,
+	0xe0bf851c, 0xa2de714f, 0xe13f839c, 0xe3de014f, 0xe17f8c9c, 0xa3de014f,
+	0x063fa91d, 0xaeff8140, 0x46bfa91e, 0xaeff8140, 0xe63f841c, 0xa2de714f,
+	0xe6bf851c, 0xa2de714f, 0xe13f83bc, 0xa3de000f, 0xe17f8cbc, 0xa3de000f,
+	0xe13f83bc, 0xe3fe3fff, 0xe17f8cbc, 0xa3fe3fff, 0x063fa91d, 0xaeff8140,
+	0x46bfa91e, 0xaeff8140, 0xe03f841c, 0xa2de714f, 0xe0bf851c, 0xa2de714f,
+	0xe13f839c, 0xa3de014f, 0xe17f8c9c, 0xa3de014f, 0x063f841c, 0xaeff8140,
+	0x46bf851c, 0xaeff8140, 0xe13f861c, 0xa2deb14f, 0xe17f871c, 0xa2deb14f,
+	0xe63f881c, 0xe2de817f, 0xe6bf891c, 0xa2de817f, 0xc23fa91d, 0xaedffd70,
+	0xe27fa91e, 0xaedffd70, 0x1fff841c, 0xec840133, 0xe13f061c, 0xb2fe014f,
+	0xdfffad1c, 0xac8401f0, 0x00000000, 0x00000000, 0x1fff841c, 0xac840133,
+	0xe13f061c, 0xf2fe014f, 0xe1bf871c, 0xa2def14f, 0xffff911c, 0xac8401f0,
+	0x00000000, 0x00000000, 0x1e62041c, 0xee1ffc18, 0x5e62851c, 0xae1ffc18,
+	0xffc22d1d, 0xa0840c1f, 0xffc2ad1e, 0xa0840c1f, 0xffc02d1d, 0xe0840c1f,
+	0xffc12d1e, 0xa0840c1f, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0xe03fad1d, 0xe0208c4f, 0xe0bfad1e, 0xe0208c4f, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x1fcc081c, 0xec9fcdd0, 0x5fcd091c, 0xac9fcdd0,
+	0xe20c2d1d, 0xa040cf5f, 0xe24d2d1e, 0xa040cf5f, 0xffc22d1d, 0xe0840c1f,
+	0xffc32d1e, 0xa0840c1f, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0xe0bf851c, 0xa020c34f, 0xe03f841c, 0xe020c34f, 0xffc2861d, 0xa0840fff,
+	0x01822d1d, 0xac5fcd13, 0x4182ad1e, 0xac5fcd13, 0xdfffc29c, 0xafdfc000,
+	0xe03f881d, 0xa020800f, 0xe004091d, 0xe0408fcf, 0xffff891e, 0xae9fcf0f,
+	0xe084ad1d, 0xa040cc0f, 0xe084ad1e, 0xa040cd5f, 0xdfffc29c, 0xafdfc000,
+	0xe0bf8a9d, 0xaf60c0ff, 0x0081881d, 0xf1608000, 0xe005091d, 0xa0408fcf,
+	0x1fc4911c, 0xac9fcc01, 0x00000000, 0x00000000, 0xffcc041c, 0xe0808ddf,
+	0xffcd051c, 0xa080cddf, 0x410c2d1d, 0xac5fcf50, 0x414d2d1e, 0xac5fcf50,
+	0xe60b041c, 0xb046015f, 0xe68b851c, 0xb046415f, 0x860b861c, 0xac450150,
+	0xa68b871c, 0xac454150, 0xc60b841c, 0xac448150, 0xe68b851c, 0xac44c150,
+	0xffc2061c, 0xa0808ddf, 0xffc2871c, 0xa080cddf, 0x4182081c, 0xac5fcf50,
+	0x41c2891c, 0xac5fcf50, 0xe20f041c, 0xb048015f, 0xe24f851c, 0xb048415f,
+	0x820f861c, 0xac470150, 0xa24f871c, 0xac474150, 0xc20f841c, 0xac468150,
+	0xe24f851c, 0xac46c150, 0xe2140a1c, 0xb04a815f, 0xe2548b1c, 0xb04ac15f,
+	0x4214861c, 0xac498151, 0x6254871c, 0xac49c151, 0xc2148a1c, 0xac490150,
+	0xe2548b1c, 0xac494150, 0x4214861c, 0xac488151, 0x6254871c, 0xac48c151,
+	0xe23fb07c, 0xa3cb004f, 0xffc3041f, 0xae9fcf1f, 0xe27fb07c, 0xa3cb004f,
+	0xffc3851f, 0xae9fcf1f, 0xe23fb01c, 0xa3cb034f, 0xffff841f, 0xae84030f,
+	0xe27fb01c, 0xe3cb034f, 0xffff851f, 0xae84030f, 0xffc22d1d, 0xa0840c1f,
+	0xffc2ad1e, 0xa0840c1f, 0xe03f841c, 0xa024404f, 0xe0bf851c, 0xa024404f,
+	0xffcc061c, 0xe0808ddf, 0xffcd071c, 0xa080cddf, 0x818c2d1d, 0xac5fcd50,
+	0xa1cd2d1e, 0xac5fcd50, 0x063f841c, 0xaeff8140, 0x413f861c, 0xeedff140,
+	0x463f881c, 0xeedfc170, 0xc23fa91c, 0xeedffd70, 0x00000000, 0x00000000,
+	0xdfffc29c, 0xefdfc000, 0xffc02d1d, 0xac9fcc1f, 0xffc12d1e, 0xac9fcc1f,
+	0x00000000, 0x00000000, 0xdfffc29c, 0xefdfc000, 0xe03fad1d, 0xa0208c4f,
+	0xe0bfad1e, 0xa0208c4f, 0x00000000, 0x00000000,
+};
+
+#define M9_2D_PROGRAM_BASE	0x80000000u
+#define M9_2D_PROGRAM_BLOCK	0x40u
+#define M9_2D_PAIRS_PER_BLOCK	8u
+/*
+ * Program constants: bank 0x680 (0, 1.0f, 4.2667f, 0) and the 0x600 bank
+ * the copy reads (0, 0, all ones).
+ */
+#define M9_2D_CONST_BANK	0xc0000680u
+#define M9_2D_STATE_BANK	0x80000600u
+#define M9_2D_E6_BANK		0x04000001u
+/* Raster control: ROP copy (0xaa) with the 2-D source/target selects. */
+#define M9_2D_EF		0x180000aau
+#define M9_2D_EE		0xffff0000u
+/* Depth and stencil off; all colour channels written; blend pass-through. */
+#define M9_2D_MASK_ALL		0xffffffffu
+#define M9_2D_AE		0x22444442u
+/* An unbounded clip window and the guard band the vendor programs. */
+#define M9_2D_CLIP_MAX		0x7fff7fffu
+#define M9_2D_GUARD		0x40004000u
+/* Register-pair layout of the 2-D program (88/89) and its store entry. */
+#define M9_2D_PAIRS		0x00103303u
+#define M9_2D_PAIRS_USED	0xfe207ff8u
+#define M9_2D_PROGRAM_ENTRY	4u
+#define M9_2D_F0_UNITS		0xc0000000u
+#define M9_2D_TEXTURE_UNITS	4u
+
+struct m9_emit {
+	u32 *w;
+	u32 n, cap;
+};
+
+static void m9_put(struct m9_emit *e, u32 header, const u32 *v, u32 count)
+{
+	if (e->n + 1 + count <= e->cap) {
+		e->w[e->n] = header;
+		for (u32 i = 0; i < count; i++)
+			e->w[e->n + 1 + i] = v[i];
+	}
+	e->n += 1 + count;
+}
+
+#define PUT(e, h, ...) do { \
+	const u32 v_[] = { __VA_ARGS__ }; \
+	m9_put(e, h, v_, ARRAY_SIZE(v_)); \
+} while (0)
+
+int m9x_engine_2d_state(u32 *words, u32 capacity, u32 token, u32 *used)
+{
+	struct m9_emit e = { .w = words, .cap = capacity };
+	u32 i;
+
+	PUT(&e, M9_HW_HDR3(0xf0, 0xef, 0xd7), 0, M9_2D_EF, 0);
+	PUT(&e, M9_HW_HDR1(0xee), M9_2D_EE);
+	/* 2-D origins and extent cleared until a copy sets them. */
+	PUT(&e, M9_HW_HDR(0xec, 0xf2, 0xf3, 0xf4), 0, 0, 0, 0);
+	PUT(&e, M9_HW_HDR1(0x22), 0);
+	PUT(&e, M9_HW_HDR3(0xa8, 0xa9, 0xaa), 0, 0, 0);
+	PUT(&e, M9_HW_HDR3(0xab, 0xac, 0xae), M9_2D_MASK_ALL, M9_2D_MASK_ALL,
+	    M9_2D_AE);
+	PUT(&e, M9_HW_HDR(0xf5, 0xf6, 0xc4, 0xc5), 0, M9_2D_CLIP_MAX, 0,
+	    M9_2D_GUARD);
+	PUT(&e, M9_HW_HDR(0x88, 0x89, 0x8a, 0xc1), M9_2D_PAIRS,
+	    M9_2D_PAIRS_USED, 0, 0);
+	PUT(&e, M9_HW_HDR2(0xe6, 0xe3), M9_2D_E6_BANK, token);
+	PUT(&e, M9_HW_HDR2(0xc2, 0xc3), M9_2D_PROGRAM_ENTRY, 0);
+	for (i = 0; i < ARRAY_SIZE(m9_engine_2d_program); i += 2) {
+		u32 pair = i / 2 % M9_2D_PAIRS_PER_BLOCK;
+		u32 block = i / 2 / M9_2D_PAIRS_PER_BLOCK;
+
+		PUT(&e, M9_HW_HDR3(0x8f, 0x90 + 2 * pair, 0x91 + 2 * pair),
+		    M9_2D_PROGRAM_BASE + block * M9_2D_PROGRAM_BLOCK,
+		    m9_engine_2d_program[i], m9_engine_2d_program[i + 1]);
+	}
+	PUT(&e, M9_HW_HDR(0x8c, 0x8d, 0x8e, 0x8f), 0, 0, 0, 0);
+	PUT(&e, M9_HW_HDR2(0xe6, 0xe3), M9_2D_E6_BANK, token);
+	PUT(&e, M9_HW_HDR3(0x8f, 0x90, 0x91), M9_2D_CONST_BANK, 0, 0x3f800000u);
+	PUT(&e, M9_HW_HDR3(0x8f, 0x92, 0x93), M9_2D_CONST_BANK, 0x40888889u, 0);
+	PUT(&e, M9_HW_HDR2(0xe6, 0x8f), M9_2D_E6_BANK, M9_2D_STATE_BANK);
+	PUT(&e, M9_HW_HDR3(0x90, 0x91, 0x92), 0, 0, M9_2D_MASK_ALL);
+	PUT(&e, M9_HW_HDR1(0xf0), M9_2D_F0_UNITS);
+	for (i = 0; i < M9_2D_TEXTURE_UNITS; i++)
+		PUT(&e, M9_HW_HDR1(0x74 + i), 0);
+	/* Every texture unit unbound: selector, address/descriptors, sampler. */
+	for (i = 0; i < M9_2D_TEXTURE_UNITS; i++) {
+		PUT(&e, M9_HW_HDR1(0x70 + i), 0);
+		PUT(&e, M9_HW_HDR3(0x78, 0x79, 0x7a), 0, 0, 0);
+		PUT(&e, M9_HW_HDR3(0x7c, 0x7d, 0x87), 0, 0, 0);
+		PUT(&e, M9_HW_HDR(0x80, 0x81, 0x7e, 0x7f), 0, 0, 0, 0);
+	}
+	PUT(&e, M9_HW_HDR1(0xf0), 0);
+	*used = e.n;
+	return e.n <= e.cap ? 0 : -ENOSPC;
+}
+
+u32 m9x_engine_2d_state_words(void)
+{
+	u32 n;
+
+	m9x_engine_2d_state(NULL, 0, 0, &n);
+	return n;
+}

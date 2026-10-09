@@ -4,7 +4,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include "m9_engine_read_encode.h"
-#include "m9_engine_read_2d_state.h"
+#include "m9_engine_2d_state.h"
 #include "m9_hw_encode.h"
 
 /* MxMD.dll 0xb1621..0xb1634: copy control of a 16 or 32 bpp source. */
@@ -32,8 +32,6 @@
 #define M9_READ_SEQ0_BANK0	0x007ff000u
 #define M9_READ_SEQ0_BANK2	0xffffffffu
 
-#define M9_READ_STATE_WORDS	ARRAY_SIZE(m9_engine_read_2d_state)
-#define M9_READ_STATE_TOKENS	ARRAY_SIZE(m9_engine_read_2d_tokens)
 
 static u32 m9_min(u32 a, u32 b)
 {
@@ -82,7 +80,7 @@ int m9x_engine_read_encode(const struct m9x_engine_read_request *r,
 		if (!m9_ring_valid(&r->ring[i], pitch))
 			return -EINVAL;
 	if (r->state)
-		fixed += M9_READ_STATE_WORDS + 7;
+		fixed += m9x_engine_2d_state_words() + 7;
 	if (capacity < fixed + M9X_ENGINE_READ_CHUNK_WORDS || !max_chunks)
 		return -ENOSPC;
 	t0 = r->token;
@@ -121,11 +119,11 @@ int m9x_engine_read_encode(const struct m9x_engine_read_request *r,
 	words[n++] = M9_HW_HDR1(0x1b);
 	words[n++] = r->fence_bus | M9_READ_TAG_BUS;
 	if (r->state) {
-		memcpy(words + n, m9_engine_read_2d_state,
-		       sizeof(m9_engine_read_2d_state));
-		for (i = 0; i < M9_READ_STATE_TOKENS; i++)
-			words[n + m9_engine_read_2d_tokens[i]] = t0;
-		n += M9_READ_STATE_WORDS;
+		u32 used;
+
+		if (m9x_engine_2d_state(words + n, capacity - n, t0, &used))
+			return -ENOSPC;
+		n += used;
 	}
 	words[n++] = M9_HW_HDR3(0xe6, 0x8f, 0x93);
 	words[n++] = M9_READ_E6_BANK;

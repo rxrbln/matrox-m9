@@ -37,7 +37,7 @@
 static uint m9_surface_engine_read;
 module_param_named(surface_engine_read, m9_surface_engine_read, uint, 0644);
 MODULE_PARM_DESC(surface_engine_read,
-		 "Read render targets by engine copy to system memory: 0 window, 1 with the vendor 2-D state, 2 copy registers only (UNTESTED)");
+		 "Read render targets by engine copy to system memory: 0 window, 1 engine copy in the 2-D context, 2 diagnostic copy without the 2-D state (MEASURED wrong pixels)");
 static uint m9_surface_engine_min_bytes = SZ_64K;
 module_param_named(surface_engine_min_bytes, m9_surface_engine_min_bytes, uint,
 		   0644);
