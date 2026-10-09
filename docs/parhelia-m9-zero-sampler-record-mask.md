@@ -87,3 +87,39 @@ This CPU emulator/source proof does not establish hardware rendered correctness.
 The hardware gate is full/error/guard/white/column against software, followed by
 relevant matrix Piglit and advanced glmark2/Quake3 controls with healthy GPU
 retirement. Root owns the shared locked hardware queue.
+
+## Sampled producer source control (2026-10-10)
+
+`runtime-dependent.json` retains a second source-generated public PS: sample
+unit0, add uniformc0 to that value, then use it as the coordinate of sample
+unit1. The actual vendor returns a sampled record producer with one physical
+texture unit and native slot `1fc0111c bc8fc110` (write output11 from input0).
+It writes no ordinary low temporary. Genuine `150dc0` mask isffff; `17f040`
+common state and final `f5050` both retain `0010ffff`. Its last R88 writer is
+`17f1ea`, and the zero-sampler `f98ce` exclusion is not applied. This actual
+common-state join establishes that the unused-pair mask is not a universal
+ORed record flag for sampled producers either. It remains CPU/runtime source
+proof, with actual retained owners and no supplied GPU completion or texels.
+
+Mesa candidatea99623d extends the final native low-pair derivation to sampled
+record producers. Only R88 bits3:0 may change; bits31:4, `record_reserved`
+allocation, texel-live exclusions and all gates remain unchanged. The actual-C
+fixture now checks3132 cases, including this genuine sampled stream and a pinned
+copy of the former production R88 function for exact high-bit preservation.
+ASAN/UBSAN passes (leak detection disabled). Seven shader comparisons preserve
+all native words, constants and schedules, with R88 XOR restricted to0000000f.
+The182-shader corpus stays byte-identical, required23/23 exact.
+
+White producer `0010031b` becomes `00100313`, protecting live06/07. The scalar,
+INLINE0 floor187 has the same conflict in producer passes0/2/5; pure one-unit
+texture exports instead changefffb toffff. Weapon199 and zero-sampler masks
+stay unchanged. This identifies a source-level ownership discrepancy; it does
+not establish that the residual orange gameplay floor has this cause.
+
+Three independent floor fixtures in
+`tests/m9-floor-varied-inputs-20261010` add smooth varied normal texels, enabled
+deluxe lighting with gradient texels, and both together. All other original
+floor187-q3pb inputs remain identical. Their llvmpipe references distinguish
+actual shader values missing from the old flat-white/deluxe-off control.
+Hardware qualification remains root's locked batch; neither candidate rendering
+nor gameplay success is claimed from these host proofs.
