@@ -24,6 +24,45 @@ one test per hardware-lock hold), lists `m9x-basic.txt` (452 core
 `spec@!opengl 1.x/2.x`) and `m9x-rest.txt` (5710: GLSL 1.10/1.20, shaders,
 extensions, GLX).  Results on nano under `/root/tmp/piglit/results-m9x/`.
 
+## 2026-10-09 M9128 core status (m9piglit4)
+
+Core list on main Mesa m9x f55a2d7 + outer d7c585c, M9128, T=30, private X
+(MEASURED): **284 PASS / 1 FAIL / 160 SKIP / 1 TIMEOUT / 1 WARN** (277 / 8 on
+058e780 earlier the same day).  What closed the gap:
+
+| test(s) | cause | fix |
+|---|---|---|
+| texsubimage-unpack, line-smooth-coverage, gl-1.1-xor-copypixels | GL_DITHER dithered 8-bit targets one code off exact | ed51945: dither only targets below 8 bits a channel |
+| line-flat-clip-color | draw module clipped wide lines at the viewport, the half-pixel end shift lost the edge column | 41bf1e9: clip at the guard band |
+| gl-1.0-long-line-loop, gl-1.0-ortho-pos | blended lines ran opaque on the native line raster; quads did not match its pixels | 844b3b3: blended/logic-op lines as the native pixel staircase (rule fitted on 408 measured segments) |
+| draw-pixels | no ARB_texture_rg | ec94088: R8/RG8 in B8G8R8X8 / expanded storage |
+| dlist-bitmap, scissor-bitmap, occlusion-query-discard, rastercolor (and the alpha/stipple/occlusion probes) | gl_FragDepth programs ended on the depth write without the vendor's stop slot; a depth-tested one left the conditional-kill lanes broken for the rest of the boot (depth-clear-precision-check, the first core test, did it every run) | 6019d5e: stop slot behind the depth write; 341fc8c: drop gl_FragDepth without a depth test (that draw stalled the engine) |
+| polygon-stipple-fs, gl-1.0-no-op-paths, gl-2.1-pbo | polygon stipple ignored | d7c585c + f55a2d7: draw pstipple stage, lowered-IO stipple lowering, split final pass may discard |
+| (gl-2.1-point_smooth, still WARN by design) | GL_POINT_SMOOTH drew squares | 50ed2c4 + a0b55fd: aapoint stage |
+
+Remaining:
+
+* **depth-clear-precision-check** -- known hardware rounding difference.
+  The depth unit stores floor(z * 2^24) of a program's gl_FragDepth, while
+  glClearDepth stores GL's nearest code round(z * (2^24 - 1)) (b57ec1b) and
+  interpolated z about floor(z * (2^24 - 1)).  MEASURED over 1256 depths:
+  gl_FragDepth == clear 574/1256, interpolated == clear 746/1256 (llvmpipe:
+  1122/1256 for both).  A shader-side conversion to the clear's code is not
+  possible: the fragment ALU cannot carry z * 2^24 through floor/sub (every
+  store came out 0), although a value passed straight through keeps all 24
+  bits.  The clear stays at the nearest code, which clear-versus-geometry
+  compares need.
+* **streaming-texture-leak** (TIMEOUT at 30 s): not a leak; at T=300 it
+  passes in 137.7 s with VmRSS 83-92 MB and VRAM 93-102 MB flat over the run.
+* **gl-2.1-point_smooth** (WARN): left and right halves use different
+  coverage formulas; the sprite path itself matches llvmpipe exactly.
+
+Probes, all surfaceless EGL with an llvmpipe reference, in `tools/`:
+m9-kill-lane-probe, m9-occl-probe,
+m9-alpha-probe, m9-stipple-probe, m9-line-probe, m9-axis-line-probe,
+m9-diag-line-probe, m9-depth-trigger, m9-fragdepth-probe, m9-rg-probe,
+m9-sprite-probe.
+
 ## Core set (MEASURED)
 
 | build | pass | fail | crash | timeout | skip |
