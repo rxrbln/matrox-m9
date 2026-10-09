@@ -59,10 +59,17 @@ later work (window-mode reference 272 / 10).
 * gl_FragDepth is stored one code above GL's for ~1/3 of depths
   (depth-clear-precision-check); a code-rounding lowering gets 856/1256
   exact, not all, so it is not merged.
-* fbo-alphatest-nocolor(+ff): a fully colour-masked job's kills do not stop
-  its depth writes (hypothesis under test).
-* fbo-blit-stretch: the engine blit reports the draws done but the
-  destination keeps its clear (under test with tools/m9fbo-probes).
+* fbo-alphatest-nocolor(+ff): in a depth-only FBO the alpha-tested draw
+  whose fragments are all discarded still writes depth (passes on llvmpipe
+  with -fbo). Not the colour mask: leaving colour writes on into the
+  scratch surface changed nothing (MEASURED). The job runs ef 0000f000;
+  the vendor captures with kill have depth off, so whether a kill program
+  needs the late depth mode gl_FragDepth uses (ef 0x0800) is unknown and
+  untested (stall risk without vendor evidence).
+* fbo-blit-stretch fails under -fbo on llvmpipe too (its verify() reads
+  framebuffer 0, the never-drawn window, instead of piglit_winsys_fbo); it
+  passes on llvmpipe in window mode. FBO-to-FBO blits are exact on the M9
+  (blitprobe: unscaled, stretched, flipped, full).
 * fbo-fragcoord2 (gl_FragCoord with gl_FrontFacing), texwrap of depth
   formats, s3tc mipmap levels that cannot be stored, fbo-pbo-readpixels-small
   (uses DEPTH_COMPONENT32F without requiring ARB_depth_buffer_float).
