@@ -328,11 +328,20 @@ emit(struct ctx *c, uint32_t w0, uint32_t w1)
 
 /* Constants */
 
+/* Field by field: a key copied by assignment leaves its padding undefined. */
+static bool
+key_equal(const struct kkey *a, const struct kkey *b)
+{
+   return a->kind == b->kind && a->pair == b->pair &&
+          !memcmp(a->v, b->v, sizeof(a->v)) &&
+          !memcmp(a->off, b->off, sizeof(a->off));
+}
+
 static int
 key_add(struct ctx *c, const struct kkey *k)
 {
    util_dynarray_foreach(&c->keys, struct kkey, it) {
-      if (!memcmp(it, k, sizeof(*k)))
+      if (key_equal(it, k))
          return it - KEYS(c);
    }
    util_dynarray_append_typed(&c->keys, struct kkey, *k);
@@ -3743,7 +3752,7 @@ tmpl_scalars(struct ctx *c, const nir_scalar *s)
          return fail(c, "vector constructor");
       }
       for (unsigned j = 0; j < i; j++)
-         if (!memcmp(&k[i], &k[j], sizeof(k[i])))
+         if (key_equal(&k[i], &k[j]))
             return fail(c, "repeated constructor constant");
    }
    /* Entries are created y, w, x, z. */
