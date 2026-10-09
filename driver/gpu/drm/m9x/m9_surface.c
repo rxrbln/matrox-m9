@@ -34,10 +34,10 @@
 #define M9_ENGINE_READ_MIN_RING	(M9_SURFACE_MAX_SPAN * 4 * 32)
 #define M9_ENGINE_READ_MAX_RING	SZ_64M
 
-static uint m9_surface_engine_read;
+static uint m9_surface_engine_read = 1;
 module_param_named(surface_engine_read, m9_surface_engine_read, uint, 0644);
 MODULE_PARM_DESC(surface_engine_read,
-		 "Read render targets by engine copy to system memory: 0 window, 1 engine copy in the 2-D context, 2 diagnostic copy without the 2-D state (MEASURED wrong pixels)");
+		 "Read render targets by engine copy to system memory: 0 window, 1 engine copy in the 2-D context (default), 2 diagnostic copy without the 2-D state (MEASURED wrong pixels)");
 static uint m9_surface_engine_min_bytes = SZ_64K;
 module_param_named(surface_engine_min_bytes, m9_surface_engine_min_bytes, uint,
 		   0644);

@@ -25,10 +25,10 @@
 /* Tile rows of a large tiled surface (m9x_surface_layout_bytes). */
 #define M9_FILL_ROW_QUANTUM	32u
 
-static uint m9_bo_fill_mode;
+static uint m9_bo_fill_mode = 1;
 module_param_named(bo_fill, m9_bo_fill_mode, uint, 0644);
 MODULE_PARM_DESC(bo_fill,
-		 "Zero VRAM ranges by a queued engine copy (BO_FILL ioctl): 0 refuses with -EOPNOTSUPP, 1 enabled (UNTESTED)");
+		 "Zero VRAM ranges by a queued engine copy (BO_FILL ioctl): 0 refuses with -EOPNOTSUPP, 1 enabled (default)");
 static uint m9_bo_fill_source_rows = 512;
 module_param_named(bo_fill_source_rows, m9_bo_fill_source_rows, uint, 0644);
 MODULE_PARM_DESC(bo_fill_source_rows,
