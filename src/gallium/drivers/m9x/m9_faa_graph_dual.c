@@ -274,18 +274,19 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
       int ret=dual_draw_admissible(surface,u,frame->draws,i,&records[i].draw);if(ret)return ret;
-      /* The FIRST binds draw 0's pair; dual DRAWs keep it. */
-      if(u->texture_count==2&&first->texture_count==2)
-         for(unsigned t=0;t<2;t++)
-            if(u->texture[t].resource!=first->texture[t].resource||
-               memcmp(&u->texture[t].view,&first->texture[t].view,sizeof(u->texture[t].view)))
-               return -EOPNOTSUPP;
+      /* The FIRST binds draw 0's pair; another pair is a per-DRAW owner
+       * set of the programs version (vendor first/qa: only the DRAW's
+       * sampler words differ). */
+      bool own_pair=false;
+      for(unsigned t=0;t<u->texture_count;t++)
+         own_pair|=u->texture[t].resource!=first->texture[t].resource||
+            memcmp(&u->texture[t].view,&first->texture[t].view,sizeof(u->texture[t].view));
       if(u->texture_count==2&&first->texture_count==1)return -EOPNOTSUPP;
       records[i].program=u->texture_count==1?PARHELIA_M9_FAA_PROGRAM_SINGLE:
                                             PARHELIA_M9_FAA_PROGRAM_DUAL;
       for(unsigned t=0;t<u->texture_count;t++)records[i].texture[t]=u->texture[t].view;
       records[i].fragment=u->fragment;
-      programs|=u->texture_count==1||u->fragment;
+      programs|=u->texture_count==1||u->fragment||own_pair;
       plain[i]=records[i].draw;
    }
    uint64_t delta=0x150+(frame->count-1u)*UINT64_C(0xa0);
@@ -322,23 +323,21 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
 }
 
 /* DRAWs that may share one FIRST transaction: the same depth and cull
- * state (the winding matters only when culling) and one pair. Later DRAWs
+ * state (the winding matters only when culling). Later DRAWs
  * carry their own A8 depth word and 6A raster groups (vendor later/). */
 static bool
 dual_same_state(const struct m9_faa_application_upload *a,
                 const struct m9_faa_application_upload *b, bool first)
 {
    if(!first)return true;
+   /* A single-led FIRST takes no dual DRAW. */
+   if(a->texture_count==1&&b->texture_count==2)return false;
    if(a->state.depth_enabled!=b->state.depth_enabled||
       a->state.depth_write!=b->state.depth_write||
       a->state.depth_func!=b->state.depth_func||
       a->state.cull_face!=b->state.cull_face||
       (a->state.cull_face!=PIPE_FACE_NONE&&
        a->state.front_ccw!=b->state.front_ccw))return false;
-   for(unsigned t=0;t<2;t++)
-      if(a->texture[t].resource!=b->texture[t].resource||
-         memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
-         return false;
    return true;
 }
 
