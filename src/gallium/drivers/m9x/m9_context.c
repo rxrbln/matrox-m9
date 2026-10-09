@@ -2654,6 +2654,7 @@ static void
 m9_job_state_swap(struct m9_context *ctx, struct m9_job_state *s)
 {
    struct m9_job_key key = ctx->job_key;
+   struct m9_job_bos sampler_bos = ctx->job_sampler_bos;
    unsigned floats = ctx->record_floats, dwords = ctx->job_unit_dwords;
 
    ctx->job_key = s->key;
@@ -2662,6 +2663,8 @@ m9_job_state_swap(struct m9_context *ctx, struct m9_job_state *s)
    s->key = key;
    s->record_floats = floats;
    s->job_unit_dwords = dwords;
+   ctx->job_sampler_bos = s->job_sampler_bos;
+   s->job_sampler_bos = sampler_bos;
    m9_dynarray_swap(&ctx->records, &s->records);
    m9_dynarray_swap(&ctx->indices, &s->indices);
    m9_dynarray_swap(&ctx->draws, &s->draws);
@@ -2698,6 +2701,7 @@ m9_job_state_clear(struct m9_context *ctx)
       pipe_resource_reference(held, NULL);
    util_dynarray_clear(&ctx->job_textures);
    ctx->job_unit_dwords = 0;
+   ctx->job_sampler_bos.count = 0;
    util_dynarray_clear(&ctx->job_vs_runs);
    util_dynarray_clear(&ctx->job_vs_values);
    util_dynarray_clear(&ctx->records);
@@ -3608,6 +3612,7 @@ m9_submit_job_one(struct m9_context *ctx)
             pipe_resource_reference(held, NULL);
          util_dynarray_clear(&ctx->job_textures);
          ctx->job_unit_dwords = 0;
+         ctx->job_sampler_bos.count = 0;
          util_dynarray_clear(&ctx->job_vs_runs);
          util_dynarray_clear(&ctx->job_vs_values);
          util_dynarray_clear(&ctx->records);
@@ -3625,6 +3630,7 @@ m9_submit_job_one(struct m9_context *ctx)
          pipe_resource_reference(held, NULL);
       util_dynarray_clear(&ctx->job_textures);
       ctx->job_unit_dwords = 0;
+      ctx->job_sampler_bos.count = 0;
       util_dynarray_clear(&ctx->job_vs_runs);
       util_dynarray_clear(&ctx->job_vs_values);
       util_dynarray_clear(&ctx->records);
@@ -4222,6 +4228,7 @@ m9_submit_job_one(struct m9_context *ctx)
       pipe_resource_reference(held, NULL);
    util_dynarray_clear(&ctx->job_textures);
    ctx->job_unit_dwords = 0;
+   ctx->job_sampler_bos.count = 0;
    util_dynarray_clear(&ctx->job_vs_runs);
    util_dynarray_clear(&ctx->job_vs_values);
    util_dynarray_clear(&ctx->records);
@@ -4356,6 +4363,55 @@ m9_job_max_vertices(const struct m9_job_key *key)
    return max & ~3u;
 }
 
+static bool
+m9_job_sampler_bos_add(struct m9_job_bos *bos, const struct m9_job_key *key)
+{
+   for (unsigned u = 0; u < key->unit_count; u++)
+      if (!m9_job_bos_add(bos, key->units[u].handle))
+         return false;
+   return (!key->vs_texture || m9_job_bos_add(bos, key->vs_unit.handle)) &&
+          (!key->vs_texture_second ||
+           m9_job_bos_add(bos, key->vs_unit_second.handle));
+}
+
+static bool
+m9_job_bos_available(struct m9_context *ctx, const struct m9_job_key *key,
+                      const struct m9_job_bos *sampled)
+{
+   struct m9_job_bos stable = {0};
+   /* Source, index, system and BE each select or grow exactly one owner at
+    * submission. Index is charged even when this draw turns out unindexed:
+    * the following draw can add indices before the pending job is sent. */
+   unsigned changing = 4;
+
+   m9_job_bos_add(&stable, key->vs ? key->vs_program :
+                            key->fs ? key->variant->c2.handle :
+                                      ctx->program.handle);
+   m9_job_bos_add(&stable, ctx->fragment_db.handle);
+   m9_job_bos_add(&stable, ctx->transient.handle);
+   m9_job_bos_add(&stable, ctx->color ? m9_res(ctx->color)->handle : 0);
+   for (unsigned c = 1; !key->single_target && c < ctx->color_count; c++)
+      m9_job_bos_add(&stable, m9_res(ctx->color_extra[c - 1])->handle);
+   m9_job_bos_add(&stable, key->depth ? key->depth->handle : 0);
+   m9_job_bos_add(&stable, key->aux ? key->aux->handle : 0);
+   if (key->fs && !key->vs && key->variant->extra_count)
+      changing++;  /* one selected CPU varying arena */
+   if (key->fs && key->variant->passes.count > 1) {
+      changing++;  /* one grown inter-pass record owner */
+      m9_job_bos_add(&stable, ctx->placeholder_texture.handle);
+   }
+   /* A begin/end pair, or exclusion snapshots crossing a pause-page
+    * boundary, can name at most two query objects in this job. */
+   if (ctx->query_active || ctx->query_begin || ctx->query_end ||
+       ctx->query_exclude)
+      changing += 2;
+   /* FAA can additionally bind main, auxiliary, companion, HZ and an
+    * explicit diagnostic binding. Their owners may grow after admission. */
+   if (m9_faa_active(&ctx->screen->faa))
+      changing += 5;
+   return m9_job_bos_fit(sampled, &stable, changing);
+}
+
 static float *
 m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                const struct util_dynarray *consts,
@@ -4372,6 +4428,10 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                       util_dynarray_num_elements(&ctx->records, float) /
                       ctx->record_floats : 0;
    float *out;
+   struct m9_job_bos sampled = draws ? ctx->job_sampler_bos :
+                                         (struct m9_job_bos){0};
+   bool bos_full = !m9_job_sampler_bos_add(&sampled, key) ||
+                   !m9_job_bos_available(ctx, key, &sampled);
 
    /* A split shader preprocesses one copy of the geometry a pass. */
    unsigned copies = key->variant && key->fs ? key->variant->passes.count : 1;
@@ -4463,6 +4523,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
       bool stream_full = (key->vs && key->vs->gpu_padding) ||
+                         bos_full ||
                          dwords > M9_MAX_COMMAND_DWORDS ||
                          m9_draw_framed_dwords(dwords, draws) >
                          M9_MAX_FRAMED_DWORDS ||
@@ -4488,6 +4549,13 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    if (ctx->lost)
       return NULL;
    if (!draws || records == 0) {
+      sampled.count = 0;
+      if (!m9_job_sampler_bos_add(&sampled, key) ||
+          !m9_job_bos_available(ctx, key, &sampled)) {
+         m9_skip_reason(ctx, "one draw needs more objects than a submission "
+                             "can bind; draw skipped");
+         return NULL;
+      }
       util_dynarray_clear(&ctx->job_consts);
       if (key->fs && consts->size &&
           !util_dynarray_grow_bytes(&ctx->job_consts, 1, consts->size))
@@ -4503,6 +4571,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       ctx->record_floats = record_floats;
    }
    ctx->job_key = *key;
+   ctx->job_sampler_bos = sampled;
    ctx->job_unit_dwords = unit_dwords;
    for (unsigned k = 0; k < key->unit_count; k++) {
       struct pipe_resource **held =

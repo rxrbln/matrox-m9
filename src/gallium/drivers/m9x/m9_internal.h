@@ -35,6 +35,7 @@
 #define M9_MAX_RELOCS M9_MAX_COMMAND_DWORDS
 /* Objects one submission may reference; the kernel's own ceiling. */
 #define M9_MAX_BOS 128u
+#include "m9_job_bos.h"
 /* Colour targets one draw binds; m9_draw.h states it as M9_DRAW_MAX_COLOR
  * and m9_draw.h cannot be included before this header's own definitions. */
 #define M9_MAX_COLOR 4u
@@ -522,6 +523,7 @@ struct m9_job_state {
    struct util_dynarray job_textures, job_consts, job_vs_consts;
    struct util_dynarray job_vs_runs, job_vs_values;
    unsigned record_floats, job_unit_dwords;
+   struct m9_job_bos job_sampler_bos;
 };
 
 /* A multi-pass job whose geometry covers part of its render target stops the
@@ -824,6 +826,7 @@ struct m9_context {
     * struct m9_near_run order they came in. */
    struct util_dynarray near_flags, near_inside, near_crossing, near_runs;
    unsigned job_unit_dwords;
+   struct m9_job_bos job_sampler_bos;
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t engine_blits;       /* copies and blits the raster engine drew */
