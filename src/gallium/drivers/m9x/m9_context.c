@@ -5962,11 +5962,10 @@ m9_index_range(const void *indices, unsigned index_size, unsigned first,
  * without a word, which is how a mesh under a split shader lost every run but
  * its last; the skip report names it now. */
 static void
-m9_render_drop(struct m9_context *ctx)
+m9_render_drop(struct m9_context *ctx, const char *why)
 {
-   m9_warn_once(ctx, M9_WARN_FS,
-                "a draw's records did not fit one job; draws skipped");
-   m9_skip_reason(ctx, "a draw's records did not fit one job");
+   m9_warn_once(ctx, M9_WARN_FS, why);
+   m9_skip_reason(ctx, why);
    ctx->skipped_draws++;
    m9_prof_skipped++;
 }
@@ -5993,19 +5992,66 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
 
       m9_index_range(indices, index_size, done, n, &lo, &hi);
       /* Halve the run until the vertices it spans fit one job's records. */
-      while (hi - lo + 1 > max) {
-         n = n / 2 / grain * grain;
-         if (!n) {
-            m9_render_drop(ctx);
+      while (hi - lo + 1 > max && n > grain) {
+         n = MAX2(n / 2 / grain * grain, grain);
+         m9_index_range(indices, index_size, done, n, &lo, &hi);
+      }
+      /* One primitive whose corners lie further apart than a job holds --
+       * the clipper appends its new vertices at the end -- takes its own
+       * records in index order. */
+      if (hi - lo + 1 > max) {
+         if (grain > max) {
+            m9_render_drop(ctx, "a primitive has more corners than one job "
+                           "holds; draws skipped");
             return;
          }
-         m9_index_range(indices, index_size, done, n, &lo, &hi);
+         out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL,
+                              M9_RECORD_FLOATS, grain, &first, &extra);
+         if (!out || (extra && r->extra_count != key->variant->extra_count)) {
+            m9_render_drop(ctx, "a job could not take a draw's records; "
+                           "draws skipped");
+            return;
+         }
+         index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
+         words = util_dynarray_grow(&ctx->indices, uint16_t,
+                                    grain + (grain & 1) + M9_INDEX_TAIL);
+         if (!words) {
+            ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+            if (extra)
+               ctx->extra.size = (size_t)first * 4 * r->extra_count * sizeof(float);
+            m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
+            return;
+         }
+         for (unsigned v = 0; v < grain; v++) {
+            m9_render_record(r, m9_index_at(indices, index_size, done + v),
+                             out + v * M9_RECORD_FLOATS,
+                             extra ? extra + v * 4 * r->extra_count : NULL);
+            words[v] = first + v;
+         }
+         if (extra && !m9_proj_constant(key, topology, extra, r->extra_count,
+                                        NULL, 0, 0, 0, grain)) {
+            ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+            ctx->extra.size = (size_t)first * 4 * r->extra_count * sizeof(float);
+            ctx->indices.size = (size_t)index_first * sizeof(uint16_t);
+            m9_warn_once(ctx, M9_WARN_FS, m9_proj_reason);
+            return;
+         }
+         for (unsigned v = 0; extra && v < grain; v++)
+            m9_scale_coords(key, extra + v * 4 * r->extra_count);
+         for (unsigned i = grain; i < grain + (grain & 1) + M9_INDEX_TAIL; i++)
+            words[i] = words[grain - 1];
+         m9_job_commit(ctx, out, extra, grain, first, index_first, grain,
+                       topology, cull, lines,
+                       ctx->rasterizer && ctx->rasterizer->flatshade);
+         done += grain;
+         continue;
       }
       vertices = hi - lo + 1;
       out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL, M9_RECORD_FLOATS,
                            vertices, &first, &extra);
       if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_drop(ctx);
+         m9_render_drop(ctx, "a job could not take a draw's records; "
+                        "draws skipped");
          return;
       }
       /* An odd run is padded to a whole dword so every run stays aligned,
@@ -6070,7 +6116,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    /* Native connected primitives are bounded by max_vertex_buffer_bytes;
     * lists split on any multiple of six. */
    if (count > max && !list) {
-      m9_render_drop(r->ctx);
+      m9_render_drop(r->ctx, "a connected primitive is longer than one job "
+                     "holds; draws skipped");
       return;
    }
    for (unsigned done = 0; done < count;) {
@@ -6081,7 +6128,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                                   M9_RECORD_FLOATS, n, &first, &extra);
 
       if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_drop(r->ctx);
+         m9_render_drop(r->ctx, "a job could not take a draw's records; "
+                        "draws skipped");
          return;
       }
       for (unsigned i = 0; i < n; i++) {
@@ -7277,7 +7325,8 @@ m9_native_vs_append_welded(struct m9_context *ctx,
 
       k = m9_weld_run(weld, done, max, grain, &lo, &hi);
       if (!k) {
-         m9_render_drop(ctx);
+         m9_render_drop(ctx, "a welded primitive spans more records than one "
+                        "job holds; draws skipped");
          return true;
       }
       vertices = hi - lo + 1;
@@ -7287,7 +7336,8 @@ m9_native_vs_append_welded(struct m9_context *ctx,
           !m9_vs_source_records_gather(&n->layout, n->map, n->size,
                                        n->buffer_count, n->first_vertex,
                                        weld->source + lo, vertices, out)) {
-         m9_render_drop(ctx);
+         m9_render_drop(ctx, "a job could not take a draw's records; "
+                        "draws skipped");
          return true;
       }
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
@@ -7346,7 +7396,8 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
              !m9_vs_source_records(&n->layout, n->map, n->size,
                                    n->buffer_count, n->first_vertex + done, k,
                                    out)) {
-            m9_render_drop(ctx);
+            m9_render_drop(ctx, "a job could not take a draw's records; "
+                           "draws skipped");
             return true;
          }
          m9_job_commit(ctx, out, NULL, k, first, 0, 0, n->topology, n->cull,
@@ -7363,13 +7414,49 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
 
       m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
       /* Halve the run until the vertices it spans fit one job's records. */
-      while (hi - lo + 1 > max) {
-         k = k / 2 / grain * grain;
-         if (!k) {
-            m9_render_drop(ctx);
+      while (hi - lo + 1 > max && k > grain) {
+         k = MAX2(k / 2 / grain * grain, grain);
+         m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
+      }
+      /* One primitive whose corners lie further apart than a job holds
+       * takes its own records in index order. */
+      if (hi - lo + 1 > max) {
+         uint32_t corner[3];
+
+         if (grain > max || grain > ARRAY_SIZE(corner)) {
+            m9_render_drop(ctx, "a primitive has more corners than one job "
+                           "holds; draws skipped");
             return true;
          }
-         m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
+         for (unsigned v = 0; v < grain; v++)
+            corner[v] = m9_native_index_at(n->indices, n->index_size,
+                                           done + v) + n->index_bias;
+         out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
+                              floats, grain, &first, &extra);
+         if (!out ||
+             !m9_vs_source_records_gather(&n->layout, n->map, n->size,
+                                          n->buffer_count, 0, corner, grain,
+                                          out)) {
+            m9_render_drop(ctx, "a job could not take a draw's records; "
+                           "draws skipped");
+            return true;
+         }
+         index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
+         words = util_dynarray_grow(&ctx->indices, uint16_t,
+                                    grain + (grain & 1) + M9_INDEX_TAIL);
+         if (!words) {
+            ctx->records.size = (size_t)first * floats * sizeof(float);
+            m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
+            return true;
+         }
+         for (unsigned v = 0; v < grain; v++)
+            words[v] = first + v;
+         for (unsigned i = grain; i < grain + (grain & 1) + M9_INDEX_TAIL; i++)
+            words[i] = words[grain - 1];
+         m9_job_commit(ctx, out, NULL, grain, first, index_first, grain,
+                       n->topology, n->cull, n->lines, n->flat);
+         done += grain;
+         continue;
       }
       vertices = hi - lo + 1;
       out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
@@ -7377,7 +7464,8 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
       if (!out ||
           !m9_vs_source_records(&n->layout, n->map, n->size, n->buffer_count,
                                 lo + n->index_bias, vertices, out)) {
-         m9_render_drop(ctx);
+         m9_render_drop(ctx, "a job could not take a draw's records; "
+                        "draws skipped");
          return true;
       }
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
