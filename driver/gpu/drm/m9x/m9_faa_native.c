@@ -35,6 +35,7 @@
 #include "m9_faa_graph_color_next_encode.h"
 #include "m9_faa_graph_depth_encode.h"
 #include "m9_hw_encode.h"
+#include "m9_faa_shadow.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #include "m9_faa_graph_first_depth_encode.h"
 #include "m9_faa_graph_later_depth_encode.h"
@@ -620,6 +621,8 @@ struct m9x_faa_replay {
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
 	/* A held Lock was force-released; the client's graph calls fail. */
 	bool revoked;
+	/* The FAA context's register values and what ordinary jobs changed. */
+	struct m9x_faa_shadow shadow;
 	u64 unlock_point;
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	/* U remains the actual Unlock. P is published only after its own wait.
@@ -973,6 +976,10 @@ module_param_named(faa_interlude_page_align, m9_faa_interlude_page_align,
 MODULE_PARM_DESC(faa_interlude_page_align,
 		 "Diagnostic: start the FAA part after ordinary jobs at a primary page boundary");
 
+static bool m9_faa_context_restore;
+module_param_named(faa_context_restore, m9_faa_context_restore, bool, 0400);
+MODULE_PARM_DESC(faa_context_restore,
+		 "After ordinary jobs, write back the FAA context's values of the state they changed");
 static bool m9_faa_interlude_restore;
 module_param_named(faa_interlude_restore, m9_faa_interlude_restore, bool,
 		   0400);
@@ -1014,11 +1021,40 @@ static int m9_faa_interlude_settle_locked(struct m9x_device *mdev, u64 base)
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9_faa_owner *o;
 	u32 start, end, i;
-	u64 point = 0;
+	u64 point = 0, limit;
 	bool posted = false;
 
 	start = r->graph_draw_end_bytes;
 	o = m9_faa_command_owner(r, false);
+	limit = o ? min_t(u64, o->bytes, o->system_node.size) : 0;
+	if (m9_faa_context_restore && o && o->cpu && start < limit) {
+		u32 count = m9x_faa_shadow_restore(&r->shadow,
+						   (u8 *)o->cpu + start,
+						   (limit - start) / 4);
+
+		if (count) {
+			dev_info_ratelimited(&mdev->pdev->dev,
+					     "M9 FAA context restore at 0x%x: %u words, %u unresolved links\n",
+					     start, count, r->shadow.unresolved);
+			end = start + 4 * count;
+			/* The CPU stores precede their END post. */
+			wmb();
+			ret = m9x_post_faa_graph_end_locked(mdev,
+							    &o->system_node,
+							    o->dma, start, end,
+							    false, 0, &point,
+							    &posted);
+			if (!posted)
+				return ret;
+			m9x_faa_ordinary_primary_commit_locked(mdev, end,
+							       r->ordinary_point,
+							       false);
+			if (ret)
+				return ret;
+			start = end;
+			posted = false;
+		}
+	}
 	if (m9_faa_interlude_restore && o && o->cpu &&
 	    start + sizeof(m9_faa_interlude_reset) <=
 	    min_t(u64, o->bytes, o->system_node.size)) {
@@ -4297,6 +4333,10 @@ static int m9_faa_submit(struct m9x_device *mdev, u32 color,
 		r->observation_point = *point;
 		r->observation_generation = t->generation;
 		r->observation_retired = true;
+		/* INIT sets the FAA context's first register values. */
+		m9x_faa_shadow_post_locked(mdev,
+					   &r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+					   0, r->primary_bytes);
 		/* An output allocation may already exist at an earlier vendor
 		 * format-transition wait. Retirement of that prefix does not
 		 * complete the later resolve or make its pixels readable.
@@ -11752,6 +11792,84 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 	}
 #else
 	return 0;
+#endif
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* CPU view of a GPU range inside one of the graph's mapped owners. */
+static const u8 *m9_faa_shadow_resolve(void *ctx, u32 gpu, u32 bytes)
+{
+	struct m9x_faa_replay *r = ctx;
+	const struct m9_faa_owner *o[ARRAY_SIZE(r->owner) +
+				     ARRAY_SIZE(r->draw_owner) + 2];
+	u32 n = 0, i, off;
+
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+		o[n++] = &r->owner[i];
+	for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
+		o[n++] = &r->draw_owner[i];
+	if (r->command_pools) {
+		o[n++] = &r->command_pools->spare[0];
+		o[n++] = &r->command_pools->spare[1];
+	}
+	for (i = 0; i < n; i++) {
+		if (!o[i]->cpu || !drm_mm_node_allocated(&o[i]->system_node))
+			continue;
+		off = gpu - (u32)o[i]->system_node.start;
+		if (off < o[i]->bytes && bytes <= o[i]->bytes - off)
+			return (const u8 *)o[i]->cpu + off;
+	}
+	return NULL;
+}
+#endif
+
+/* Every FAA END post records what its words, and the secondary ranges they
+ * link, leave in the engine for the FAA context.
+ */
+void m9x_faa_shadow_post_locked(struct m9x_device *mdev,
+				const struct drm_mm_node *node,
+				u32 old_bytes, u32 new_bytes)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = mdev->transport.faa;
+	const u8 *words;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!r || new_bytes <= old_bytes)
+		return;
+	words = m9_faa_shadow_resolve(r, (u32)node->start + old_bytes,
+				      new_bytes - old_bytes);
+	if (words)
+		m9x_faa_shadow_record(&r->shadow, words, new_bytes - old_bytes,
+				      m9_faa_shadow_resolve, r);
+#else
+	lockdep_assert_held(&mdev->transport.lock);
+#endif
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+static const u8 *m9_faa_shadow_ordinary_resolve(void *ctx, u32 gpu, u32 bytes)
+{
+	return m9x_triangle_secondary_view(ctx, gpu, bytes);
+}
+#endif
+
+/* An ordinary job placed on the retained primary marks the state its
+ * primary words and linked secondary ranges write.
+ */
+void m9x_faa_shadow_ordinary_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = mdev->transport.faa;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (r)
+		m9x_faa_shadow_mark(&r->shadow, (const u8 *)commands,
+				    dwords * 4, m9_faa_shadow_ordinary_resolve,
+				    mdev);
+#else
+	lockdep_assert_held(&mdev->transport.lock);
 #endif
 }
 

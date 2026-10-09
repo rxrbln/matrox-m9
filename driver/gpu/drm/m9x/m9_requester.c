@@ -922,6 +922,8 @@ static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 		return ret;
 	memcpy(place.cpu, commands, dwords * sizeof(u32));
 	if (place.retained)
+		m9x_faa_shadow_ordinary_locked(mdev, commands, dwords);
+	if (place.retained)
 		wmb(); /* WC retained primary; dma_wmb() is no SFENCE on x86 */
 	else
 		dma_wmb();
@@ -1328,6 +1330,7 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 	 * all earlier CPU stores before exposing this range to the GPU. */
 	wmb();
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_faa_shadow_post_locked(mdev, node, old_bytes, new_bytes);
 	/* Source repeats +64 END without an intervening MMIO read. */
 	if (target) {
 		u32 readback = m9x_read(mdev, M9_REG_COMMAND_END);

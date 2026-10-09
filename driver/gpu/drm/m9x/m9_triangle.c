@@ -1039,6 +1039,30 @@ out:
 	return ret;
 }
 
+/* CPU view of a range in one of the secondaries ordinary jobs link to. */
+const u8 *m9x_triangle_secondary_view(struct m9x_device *mdev, u32 gpu,
+				      u32 bytes)
+{
+	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	const struct m9_triangle_resource *r;
+	u32 i, off;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!diag)
+		return NULL;
+	for (i = 0; i <= M9_QUEUE_SLOTS; i++) {
+		r = i ? &diag->queued_secondary[i - 1] :
+			&diag->resource[M9_TRI_SECONDARY];
+		if (!r->cpu || !r->gpuva)
+			continue;
+		off = gpu - r->gpuva;
+		if (off < M9_TRIANGLE_SECONDARY_BYTES &&
+		    bytes <= M9_TRIANGLE_SECONDARY_BYTES - off)
+			return (const u8 *)r->cpu + off;
+	}
+	return NULL;
+}
+
 static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 			   enum m9_triangle_resource_id id)
 {

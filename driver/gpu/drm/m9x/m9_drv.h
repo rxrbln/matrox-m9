@@ -500,6 +500,13 @@ bool m9x_triangle_context_ready_locked(struct m9x_device *mdev);
 u64 m9x_faa_graph_first_origin_locked(struct m9x_device *mdev, u64 init_point);
 void m9x_faa_graph_detach_released(struct m9x_device *mdev);
 bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding);
+void m9x_faa_shadow_post_locked(struct m9x_device *mdev,
+				const struct drm_mm_node *node,
+				u32 old_bytes, u32 new_bytes);
+void m9x_faa_shadow_ordinary_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords);
+const u8 *m9x_triangle_secondary_view(struct m9x_device *mdev, u32 gpu,
+				      u32 bytes);
 bool m9x_faa_graph_blocks_own_file(struct m9x_device *mdev,
 				   struct drm_file *file);
 struct m9_faa_graph_binding *m9x_faa_graph_bound_locked(struct m9x_device *mdev);

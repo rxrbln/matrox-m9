@@ -11,6 +11,7 @@
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_print.h>
 
+#include "m9_faa_shadow.h"
 #include "m9_hw_encode.h"
 #include "m9_drv.h"
 #include "m9_reg.h"
@@ -1832,4 +1833,10 @@ int m9x_submit_selftest(void)
 	    -EINVAL)
 		return m9_refuse(-EINVAL);
 	return 0;
+}
+
+/* The state an ordinary job may write; the FAA context shadow restores it. */
+bool m9x_submit_index_writable(u8 index)
+{
+	return m9_index_allowed(index);
 }
