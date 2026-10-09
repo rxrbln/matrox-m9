@@ -5798,7 +5798,6 @@ is_condition_link(const nir_instr *instr)
    case nir_op_iand:
    case nir_op_ior:
    case nir_op_ixor:
-   case nir_op_inot:
       return true;
    default:
       return false;
@@ -5809,6 +5808,32 @@ static bool
 scalar_in_prepare(const nir_instr *instr, const void *data)
 {
    return is_condition_link(instr) || is_transcendental(instr, data);
+}
+
+/* An operand reads two components from one register lane, and a condition
+ * has no gather to reorder it, so an operation vectorised with its
+ * condition crosswise, as bcsel(f.xyyz, ...), goes back to scalars. */
+static bool
+condition_crosses_lanes(const nir_instr *instr, const void *data)
+{
+   const nir_alu_instr *alu;
+
+   (void)data;
+   if (instr->type != nir_instr_type_alu)
+      return false;
+   alu = nir_instr_as_alu(instr);
+   if (alu->def.num_components < 2)
+      return false;
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      if (nir_src_bit_size(alu->src[i].src) != 1 ||
+          nir_src_num_components(alu->src[i].src) < 2)
+         continue;
+      for (unsigned c = 0; c + 1 < alu->def.num_components; c += 2) {
+         if (alu->src[i].swizzle[c] / 2 != alu->src[i].swizzle[c + 1] / 2)
+            return true;
+      }
+   }
+   return false;
 }
 
 /* Everything but the chains and condition links vectorises again
@@ -5967,6 +5992,7 @@ fs_prepare(nir_shader *nir)
    if (lowered)
       NIR_PASS(_, nir, nir_opt_constant_folding);
    NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
+   NIR_PASS(_, nir, nir_lower_alu_to_scalar, condition_crosses_lanes, NULL);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    /* Scalarising a vector special function leaves one chain per component,
     * and the components are often the same argument. */
