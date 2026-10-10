@@ -3274,6 +3274,7 @@ selected_source(nir_shader *nir, const struct m9_vs_outputs *outputs,
                 uint64_t *manifest)
 {
    uint64_t wanted = 0, seen = 0;
+   uint8_t lanes[64] = {0};
    bool prune = false;
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
 
@@ -3282,11 +3283,17 @@ selected_source(nir_shader *nir, const struct m9_vs_outputs *outputs,
       return NULL;
    for (unsigned i = 0; i < outputs->count; i++) {
       const struct m9_vs_output *o = &outputs->stream[i];
-      if (o->location >= 64 || (o->paired && o->pair_location >= 64))
+      if (o->location >= 64 ||
+          (o->coordinate && o->component > 2) ||
+          (o->paired && (!o->coordinate || o->pair_location >= 64 ||
+                         o->pair_component > 2)))
          return NULL;
       wanted |= BITFIELD64_BIT(o->location);
-      if (o->paired)
+      lanes[o->location] |= o->coordinate ? 3u << o->component : 15u;
+      if (o->paired) {
          wanted |= BITFIELD64_BIT(o->pair_location);
+         lanes[o->pair_location] |= 3u << o->pair_component;
+      }
    }
    nir_foreach_instr(instr, nir_start_block(impl)) {
       if (instr->type != nir_instr_type_intrinsic)
@@ -3305,6 +3312,11 @@ selected_source(nir_shader *nir, const struct m9_vs_outputs *outputs,
          continue;
       *manifest |= BITFIELD64_BIT(location);
       prune |= !(wanted & BITFIELD64_BIT(location));
+      unsigned n = i->src[0].ssa->num_components;
+      unsigned base = nir_intrinsic_component(i);
+      if (!n || n > 4 || base > 4 - n || i->src[0].ssa->bit_size != 32)
+         return NULL;
+      prune |= (((1u << n) - 1u) << base) & ~lanes[location];
    }
    if (!prune)
       return NULL;
@@ -3315,10 +3327,37 @@ selected_source(nir_shader *nir, const struct m9_vs_outputs *outputs,
       if (instr->type != nir_instr_type_intrinsic)
          continue;
       nir_intrinsic_instr *i = nir_instr_as_intrinsic(instr);
-      if (i->intrinsic == nir_intrinsic_store_output &&
-          (*manifest & BITFIELD64_BIT(nir_intrinsic_io_semantics(i).location)) &&
-          !(wanted & BITFIELD64_BIT(nir_intrinsic_io_semantics(i).location)))
+      if (i->intrinsic != nir_intrinsic_store_output)
+         continue;
+      unsigned location = nir_intrinsic_io_semantics(i).location;
+      if (!(*manifest & BITFIELD64_BIT(location)))
+         continue;
+      if (!(wanted & BITFIELD64_BIT(location))) {
          nir_instr_remove(instr);
+         continue;
+      }
+      unsigned n = i->src[0].ssa->num_components;
+      unsigned base = nir_intrinsic_component(i);
+      if (!((((1u << n) - 1u) << base) & ~lanes[location]))
+         continue;
+
+      /* A coordinate publishes its selected pair, not the other lanes of
+       * the original varying. Chase only bit-exact mov/vec aliases so DCE
+       * can drop that other input tree before note_input counts attributes.
+       * Raw streams union all lanes; special stores and the original source
+       * stay intact. Real vector ALU remains conservatively unsliced. */
+      nir_builder b = nir_builder_create(nir_shader_get_entrypoint(copy));
+      b.cursor = nir_before_instr(instr);
+      nir_def *component[4];
+      for (unsigned j = 0; j < n; j++) {
+         if (lanes[location] & (1u << (base + j))) {
+            nir_scalar s = nir_scalar_resolved(i->src[0].ssa, j);
+            component[j] = nir_channel(&b, s.def, s.comp);
+         } else {
+            component[j] = nir_imm_float(&b, 0.0f);
+         }
+      }
+      nir_src_rewrite(&i->src[0], nir_vec(&b, component, n));
    }
    NIR_PASS(_, copy, nir_opt_dce);
    return copy;
