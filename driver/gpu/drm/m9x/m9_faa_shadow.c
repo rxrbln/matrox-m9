@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifdef M9_FAA_SHADOW_HOST_TEST
+#include <errno.h>
 #include <string.h>
 #else
+#include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 #endif
@@ -128,21 +130,29 @@ static void m9_shadow_put(u8 *out, u32 *at, u32 header, const u32 *values,
 		put_unaligned_le32(values[k], out + 4 * (*at)++);
 }
 
-/* Packets restoring every dirty index to the FAA value, or zero where the
- * FAA streams never set it. Returns the words written, 0 when nothing is
- * dirty or the packets would not fit in @capacity words; the dirty set is
- * then kept.
+/* Prepare packets restoring every dirty index to the FAA value, or zero
+ * where the FAA streams never set it. Reject the complete range before any
+ * write when it will not fit. Preparation leaves the shadow unchanged:
+ * only the successful FAA END hook records the posted range and clears its
+ * dirty indices. An unposted shape/PTE failure can therefore be retried.
  */
-u32 m9x_faa_shadow_restore(struct m9x_faa_shadow *s, u8 *out, u32 capacity)
+int m9x_faa_shadow_restore(const struct m9x_faa_shadow *s, u8 *out, u32 capacity)
 {
-	u32 at = 0, header = 0, values[4], n = 0, i;
+	u32 at = 0, header = 0, values[4], n = 0, i, dirty = 0;
+	u32 required;
+
+	for (i = 0; i < 256; i++)
+		dirty += !!(s->dirty[i / 32] & 1u << (i % 32));
+	required = dirty + (dirty + 3) / 4;
+	if (required > capacity)
+		return -ENOSPC;
+	if (required && !out)
+		return -EINVAL;
 
 	for (i = 0; i < 256; i++) {
 		if (!(s->dirty[i / 32] & 1u << (i % 32)))
 			continue;
 		if (n == 4) {
-			if (at + 5 > capacity)
-				return 0;
 			m9_shadow_put(out, &at, header, values, n);
 			n = 0;
 		}
@@ -154,10 +164,7 @@ u32 m9x_faa_shadow_restore(struct m9x_faa_shadow *s, u8 *out, u32 capacity)
 			      s->value[i] : 0;
 	}
 	if (n) {
-		if (at + 1 + n > capacity)
-			return 0;
 		m9_shadow_put(out, &at, header, values, n);
 	}
-	memset(s->dirty, 0, sizeof(s->dirty));
 	return at;
 }

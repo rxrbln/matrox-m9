@@ -1027,15 +1027,24 @@ static int m9_faa_interlude_settle_locked(struct m9x_device *mdev, u64 base)
 	start = r->graph_draw_end_bytes;
 	o = m9_faa_command_owner(r, false);
 	limit = o ? min_t(u64, o->bytes, o->system_node.size) : 0;
-	if (m9_faa_context_restore && o && o->cpu && start < limit) {
-		u32 count = m9x_faa_shadow_restore(&r->shadow,
-						   (u8 *)o->cpu + start,
-						   (limit - start) / 4);
+	if (m9_faa_context_restore) {
+		int count;
+
+		if (!o || !o->cpu)
+			return -ESTALE;
+		if (start > limit)
+			return -ENOSPC;
+		count = m9x_faa_shadow_restore(&r->shadow,
+					      (u8 *)o->cpu + start,
+					      (limit - start) / 4);
+		if (count < 0)
+			return count;
 
 		if (count) {
 			dev_info_ratelimited(&mdev->pdev->dev,
 					     "M9 FAA context restore at 0x%x: %u words, %u unresolved links\n",
-					     start, count, r->shadow.unresolved);
+					     start, (unsigned int)count,
+					     r->shadow.unresolved);
 			end = start + 4 * count;
 			/* The CPU stores precede their END post. */
 			wmb();

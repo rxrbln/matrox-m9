@@ -36,7 +36,9 @@ void m9x_faa_shadow_record(struct m9x_faa_shadow *s, const u8 *stream,
 			   void *ctx);
 void m9x_faa_shadow_mark(struct m9x_faa_shadow *s, const u8 *stream,
 			 u32 bytes, m9x_faa_shadow_resolve resolve, void *ctx);
-u32 m9x_faa_shadow_restore(struct m9x_faa_shadow *s, u8 *out,
-			   u32 capacity);
+/* Prepare without committing: >=0 words or an error; dirty state is kept
+ * until the successful END post records the actual emitted packets. */
+int m9x_faa_shadow_restore(const struct m9x_faa_shadow *s, u8 *out,
+			  u32 capacity);
 
 #endif
