@@ -1,0 +1,363 @@
+# M9 Gallium bring-up boundary
+
+M9 (PCI `102b:0540`) is a separate 3-D architecture.  It has an independent
+`m9x` DRM loader identity, Gallium screen, build dependency, and `m9x_dri.so`
+megadriver link.  The separate M9 kernel driver exposes only its M9 ioctls.
+No M9 command is described with a classic `P3D_*` register or packet
+definition, and no M9 source is built into the Parhelia Gallium libraries.
+
+## CPU transform rendering path (working)
+
+Contexts are created when the kernel executes user streams (probed by
+ioctl behaviour: an empty flags-zero SUBMIT fails with `EINVAL`, and a
+validate-only `STREAM` relocation passes) and the fixed-fragment database
+`m9x/rsfragptrs-normal.bin` is found (`M9X_FRAGMENT_DB`, the firmware_class
+path, `/lib/firmware/updates`, `/lib/firmware`).  The earlier user-submit and
+linked-program blockers below do not apply to this path.
+
+* The Gallium draw module runs vertex programs (NIR to TGSI exec, GLSL 1.20
+  caps, GL 1.5 compatibility is what st exposes).  A vbuf render receives
+  window-space primitives; strips, fans, quads, quad strips and polygons are
+  native, line loops and first-vertex flat shading are converted to lists.
+  Points are expanded to triangles by draw.
+* `m9_draw.c` emits one two-pass job per pass state: the captured
+  pass-through program over `xyz + rgba` float records (y submitted bottom-up,
+  `z = 1 - 2 z_win`), one covering preprocess draw padded to four records,
+  and raster draws restating `22/6a` and `f0/ef/d7/f4`.
+* `m9_draw_params.c` holds every size and state word, measured on the
+  M9148 (xf86-video-parhelia docs `parhelia-m9-cpu-tnl-raster-state.md`,
+  `parhelia-m9-cpu-tnl-draw-parameters.md`): descriptors
+  `cc21/fa21/f001 | align(W,32)`, clip `H<<16|W`, the 48-word system prefix
+  and linked record formulas, index 10/23 declarations, depth `a8`+`ef`,
+  cull `ef`, scissor `f5/f6/c4/c5`, color mask `ab`, topology and per-draw
+  shading (flat-form links, `22` bit 14).  Its unit tests reproduce the
+  verified 320x240 stream dword for dword.
+* Color render targets are `PARHELIA_M9_BO_TILED`; transfers read and write
+  rows through `DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS`.  Full clears fill the
+  BO (tiling only permutes pixels); scissored or masked clears draw a quad.
+  D24S8 depth images own a hierarchical-Z BO initialized to `0x007ff000`.
+* `tools/m9-mesa-triangle` (xf86-video-parhelia) passes on hardware at
+  320x240: reference triangle 28000 pixels at the right positions, flat and
+  Gouraud, native topologies, culling, scissored clear, color mask, a
+  7200-vertex draw split over two jobs, and the LESS depth scene.
+
+Gaps: texturing, blending, stencil, alpha test and non-pass-through fragment
+shaders (draws are skipped with a warning), perspective-correct color
+interpolation (records carry w = 1), render sizes other than 320x240 are
+covered by the measured formulas but not yet run through Mesa, surface access
+excludes targets with both sides <= 64.
+
+Stencil (2026-10-02) is the fixed-function depth unit's: `a8` bit 5 enables
+it, bit 6 the second face, function/sfail/zfail/zpass at bits 9:7..18:16 for
+clockwise faces and 21:19..30:28 for counter-clockwise ones, `a9`/`aa` the
+ref/value-mask/write-mask bytes of those faces, `ef` 0x7000 even without the
+depth test (CAPTURED, vendor GL fixed-state and gl15 fragops corpora, whose
+readbacks pass).  `m9_stencil_words` packs it; clears replace stencil
+through the same quad as depth.  The alpha test is lowered by st into the
+fragment program (`M9_FS_CONST_ALPHA_REF`).
+On the M9148 (MEASURED 2026-10-02, colour-gated probe, window and D24S8
+FBO): scissored/masked and combined clears, EQUAL/INCR/ZERO and two-sided
+stencil with CCW and CW front faces are right.  Stencil DrawPixels needs a
+fragment program without a colour output.
+
+Depth/stencil pixel paths (MEASURED 2026-10-02, `zprobe`: every depth value
+encodes its own pixel, every stencil value its 8x8 cell).  D24S8 is stored
+in the render tiling (8x4 blocks), depth and stencil in one element, so the
+raw mapping is not rows; and a raw read did not wait for the asynchronously
+posted job, so about 5400 of 40000 elements still held the previous clear.
+Transfers now go through the surface window in the sampler's kind at the
+depth row span (the colour code moves the 32-bit element verbatim; exact
+at 1x1 to 640x240), which also drains the engine; a CPU write resets the
+hierarchical plane.  The depth unit tests the last partial 64-column group
+wrongly when the depth row span is only 32-aligned (piglit hiz at 400, 416
+and 352 wide), and writes stencil into the wrong cells of small surfaces
+12 to 30 wide, so every depth surface takes a 64-aligned span.  Colour
+targets of 64x64 and below are read through the small kind at their
+32-aligned span; at the texel width a 60x60 target came back sheared.
+Blits the engine refuses (depth/stencil, masks, scissors, mirroring,
+scaling) run on the CPU; a half-size mirrored scissored D24S8 blit is
+exact.
+
+Logic ops (CAPTURED, captures/m9x-vendor-gl2ext-2d-video-modes-20260915
+logic-xor/and/or/invert against logic-copy): there is no logic-op state
+word.  The vendor appends a 39-slot tail to the fragment program that
+reads the destination (18/1a, `ef` 0xaa and `f0` c5008200 as for blending),
+converts both colours with constants 2^-14, 65535, 65536, 1/256, 4 and 2^-16,
+applies one bitwise instruction (op2 0x16) per register pair and writes
+0x2d.  The four tails are identical except slots 35/36: xor W1 ..cd70,
+and ..f140 (m1 1111, m2 1100, lo 4), or ..fd70, invert ..cd40 with cls 6.
+
+Implemented (logic_append): the fragops capture
+(captures/m9x-linux-gl15-ff-20260915 part-2, logic_*) holds all sixteen;
+the fifteen tails differ only in W0 cls (0, or 6 to complement) and
+W1[15:4] of slots 35/36.  The tail is replayed with relocated registers and
+constants; its conversion forms stay undecoded.  7d/7e hold 1024 plus an
+8x8 ordered dither value per channel (MEASURED), which the vendor adds to
+the source -- the capture's one-lower "srcq" bytes.  The driver loads the
+constant 1056 in their place: every source and destination byte is then
+exact for all fifteen functions (MEASURED, logicprobe).  Width-1 lines
+under a logic op are drawn as quads, the line class with a destination
+read not being captured.
+
+## Implemented foundation
+
+The following userspace foundation is ready for the first executable
+userspace-stream submit.  The independent kernel module has already completed
+6,000 consecutive kernel-owned no-op fences across both directions of its
+two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
+
+* `m9_internal.h` owns separate screen, context, resource, canonical vertex,
+  and batch structures.  M9 command buffers are capped at the kernel's 32 KiB
+  limit, with 128 relocations and 64 referenced BOs.
+* `m9_batch.c` emits the byte-indexed M9 packet format with stop byte `0x45`.
+  Address operands always start as zero and are named by a typed UAPI
+  relocation.  BO access is accumulated independently from relocation type;
+  render/depth targets are conservatively read/write for kernel lifetime
+  validation.
+* Selector-8 linear render/depth descriptors and selector-2 texture
+  descriptors use the statically recovered row-span, height/layer, layout,
+  flag, and seven-bit format fields.  The captured 320x240 texture vector is
+  `f0210140,000100f0`; the corresponding A8R8G8B8 render vector is
+  `cc210140`.
+* Sampler index `7c` packs the recovered min/mag/mip, wrap, anisotropy, and
+  compiler-input tables.  Index `7d` carries signed 10-bit LOD bias and two
+  nine-bit bounds.  The two bounds retain neutral names because their final
+  orientation has not been captured.
+* `m9_mip_layout_init()` builds consecutive ordinary levels and the recovered
+  shared 32x16 tail atlas at `(0,0), (16,0), (24,0), (16,8), (24,8)`.
+  Only 2-D, uncompressed images are accepted by this first layout helper.
+* `m9_repack_vertices()` converts float and normalized-byte Gallium-like
+  inputs to one canonical CPU layout: float4 position, float4 color, and
+  float2 texture coordinates.  Missing color and texture inputs receive
+  OpenGL defaults.  This keeps API vertex formats out of the unknown hardware
+  stream descriptors.
+* The recovered primitive frontend selectors and API vertex-count arithmetic
+  cover points, line list/strip, and triangle list/strip/fan.  Final raster
+  control is enabled only for captured triangle-list `0x6403`.  Gears uses
+  both `0x6406` and `0x6407`, so strip control remains gated.
+* The known gltri linked-program bind emits indices `69,6a,68,6b,6c`.
+  Static emitter ownership and live snapshots prove index `69` selects the
+  immutable external fixed-fragment database; it uses a 0x1000-aligned
+  RESOURCE_69 relocation with read-only access. The render target is bound
+  independently through selector-8 `b0/b1`. Index `6c`
+  uses a distinct RESOURCE_6C relocation to a 0x80-aligned system record.
+  The kernel supplies `6c` low bit 0; it does not add the requester system
+  tag.  The builder accepts only a program explicitly marked as the captured
+  gltri class.  General NIR programs are not claimed.
+* The captured triangle raster state emits viewport/scissor, stream controls,
+  and `a8` depth bits.  Depth test with no update is `a8 bit0=1, bit1=0`.
+  H03 numeric, H07 32-bit-index, and H06 packed-16-index draws use exclusive
+  ends and only the two observed launch classes.  H06's odd terminal halfword
+  is an explicit relocation flag; both H06 and H07 use one BO for the paired
+  start/end relocations and reject a 32-bit packet-span overflow.
+* `m9_batch_prepare_submit()` builds the exact initial DRM UAPI request and
+  `m9_batch_validate()` uploads it to a COMMAND BO with
+  `PARHELIA_M9_SUBMIT_VALIDATE_ONLY`.  `m9_command_bo_create()` creates the
+  required 32 KiB DMA32 command object.
+* The lower execution path is now built rather than implied.  It prepares the
+  same request with flags zero, uploads the sealed command image, requires a
+  nonzero returned fence point, and refuses the operation unless the screen's
+  executable-submit gate is set.  The diagnostic no-op-fence request has a
+  separate exact helper.  Pipe fences model the current synchronous UAPI; an
+  asynchronous kernel ABI must add a wait operation before it can be enabled.
+  `m9_submit_first_triangle()` supplies one kernel-validated VRAM color target
+  to the otherwise kernel-owned diagnostic.  The current kernel prepares its
+  complete guarded job and returns `-EOPNOTSUPP` at the fresh selector-6c
+  serializer gate.
+* Context allocation, its per-context command BO, batch isolation, referenced
+  framebuffer/texture state, flush, teardown, and direct CPU buffer/texture
+  transfers are implemented behind
+  two independent gates: executable submit and a safe linked-program
+  constructor.  Mip transfer offsets include the recovered 32x16 tail atlas.
+  A failed submit marks its context lost; later flushes discard pending work
+  without issuing another global-engine job.
+  A state tracker still receives `NULL` while either gate is closed.
+* Ordinary render targets, depth buffers, and sampled images use
+  `CREATE_BO(VRAM)`, matching the vendor's placement-4 local-memory resources,
+  ordinary layout 1. Render/depth allocation reproduces the vendor's
+  small-versus-ordinary category selection, horizontal and vertical quanta,
+  eight-element end padding, and final byte-quantum rounding. Gallium buffers,
+  explicit staging images, and command BOs remain DMA32 upload resources.
+  Framebuffer state accepts only a complete local-VRAM layout-1 image; it
+  rejects DMA32 and placement-unknown imports before command construction.
+* Presentation BOs use the render-node-safe `CREATE_BO(VRAM)` path with the
+  guarded KMS contract's exact 1024x768 XRGB8888 shape, 4096-byte pitch,
+  vendor-exact `0x301000` renderable backing, and direct BAR0 mapping.
+  `GET_BO_INFO` returns the mmap cookie needed to map imported local-VRAM
+  handles without primary-node-only modesetting ioctls.
+  Resource creation rejects every other scanout or display-target template,
+  including ARGB8888, before allocating a generic VRAM image.
+  KMS, flink, and PRIME winsys handles have symmetric import/export paths.
+  `flush_frontbuffer` publishes writes to that same BO and performs no shadow
+  copy or resolve.  DMA32 resources and VRAM image resources retain distinct
+  domains and destruction rules.
+
+The pipe screen advertises only exact, joined linear format usages and
+same-driver dma-buf import/export. It does not advertise MSAA, arrays,
+cube/3-D targets, shader images, compute, or GLSL. Context creation returns
+`NULL` while the kernel screen
+state says executable submit is unavailable or the linked-program constructor
+is unsafe.  This is deliberate: the kernel
+at commits `b7d0194`, `c611a0e`, `d70b370`, and `f459a8b` validates arbitrary
+command streams but executes only its kernel-owned synchronous no-op fence
+diagnostic.  Fence targets now preserve the natural
+`0xfffffff0 -> 0 -> 0x10` rollover and polling issues at most one extra
+progress kick.  Kernel commits `6c27e17` and `9219f41` add derived BO access,
+same-BO H06/H07 range validation, and retired two-slot command rotation.  The
+6,000-submit hardware run crossed from slot 0 to 1 at submit 2,731 and back to
+slot 0 at submit 5,461, ending at fence point `0x17700`.
+Kernel commit `e8bd2f3` adds the no-input first-triangle preparation path.  It
+does not execute: after allocating, initializing and relocating the complete
+known draw it fails before MMIO at the fresh-record serializer boundary.
+
+## Evidence test
+
+`m9-batch-test` checks:
+
+* UAPI object sizes and submit field placement;
+* exact captured color, texture, and depth-control values;
+* packet header byte order and `0x45` termination;
+* relocation dword, kind, access, and deduplicated BO reference handling;
+* H07 and even/odd H06 exclusive-end construction, including a draw END
+  relocation equal to the modeled BO size;
+* program binding, primitive counts, mip-tail positions, vertex conversion,
+  and validation-only submit construction.
+
+Run it with:
+
+```sh
+meson test -C BUILD m9-batch --print-errorlogs
+```
+
+## Exact execution blockers
+
+These gaps must remain visible in capability and execution gates:
+
+1. The kernel does not execute a user command stream yet.  It must append and
+   own completion, validate full state masks, pin every referenced BO, and
+   expose completion before `m9_screen.execute_submit` can become true.
+   The Mesa flags-zero execution request is ready, but the current ioctl
+   returns `-EOPNOTSUPP` by design.
+2. The gltri preprocessing pass writes four transient resources which the
+   raster pass consumes in the address permutation `[b0,b4,b8,b2]` at
+   indices `00..03`.  Four canonical preprocessing layouts, their routing and
+   repeatable `0x16800` address lattice are captured.  The invariant 80-slot
+   native image, canonical vertex arena extent `0x192700`, C2 extent `0x1080`,
+   BE auxiliary-surface ownership, its exact 1-MiB allocation extent, and
+   AB/AC/AE producer shape are also exact.
+   The bounded flat-green source is four 20-byte `{x,y,r,g,b}` records (the
+   fourth duplicates record 2), and the one-target surface state is
+   `AB=AC=0xffffffff`.  C2 has no intervening GPU initializer and the guarded
+   diagnostic policy is a zeroed job-local `0x1080` object.  This Mesa skeleton
+   general Mesa path still lacks the preprocessing builder, local-VRAM
+   allocator, and a fresh linked record.  The kernel-owned diagnostic now
+   contains the exact 118/113/8-dword templates, all 24 typed address sites,
+   six transition targets, and guarded operand initialization.
+3. Selector `6c` atomically binds one immutable linked VS/FS pair.  Private
+   0x3158-byte allocation, ordered cache reuse, COW validation/publication and
+   fence lifetime are exact.  Symbolic graph descriptors now map through the
+   physical converter to finite `94/b4/c4` selector namespaces and exact
+   W0/W1 bit fields.  A new compiler still needs arbitrary CFG scheduling and
+   the heterogeneous external `6c` record constructor.  The captured A/B
+   programmable records contain no embedded GPU-BO pointers, but the selected
+   fixed-function slot contains nine process-specific host pointers and cannot
+   be replayed in a new context. Index `69` is the external fixed-fragment
+   database, and the known bind tuple alone is not a general shader path.
+   This is now the final Mesa context-creation gate after kernel execution.
+4. Triangle-strip control is captured from gears, but its correlated `d7`
+   field and strip batching boundary need a minimal differential before live
+   draw submission.  Other primitive raster-control values are unproved.
+5. The direct page-run, GPU rectangle-draw, and CPU fallback clear paths are
+   statically recorded, including their surface views and rectangle records.
+   They still need translation into the new batch builder and live replay;
+   linear BOs can be CPU-cleared during early bring-up.
+6. All class-3 calculator routes and all fourteen non-32-bit aperture formulas
+   are exact.  Their live index-`78` table-root/page ownership and physical-page
+   validation remain open.  Hierarchical-Z format `0x0b`, its
+   `ceil(width/8) x ceil(height/4)` extent and selector-12 `ba/bb` bind are
+   exact.  Static analysis also closes initialization/partial invalidation to
+   `0x007ff000`, full-depth-clear seeding, uncoupled-write dirty refresh,
+   creator/clone ownership, and null-auxiliary fallback.  Keep HZ disabled
+   until live rejection-correctness validates that protocol.  Compressed,
+   cube/volume, sampler sRGB, query, reset-recovery, and
+   general-shader paths remain gated at the narrower boundaries in the
+   readiness ledger.
+7. The additive `PARHELIA_M9_BO_VRAM` create flag and typed VRAM relocation
+   validation must remain synchronized with the kernel UAPI.  Mesa now uses
+   that domain for raster images and rejects DMA32 framebuffer attachments;
+   executable userspace draws remain gated until the parameterized job path
+   has complete BO reservations and retirement fences.
+
+The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
+contains only the P-series IDs.  Keep `include/drm-uapi/m9x_drm.h`
+synchronized with the kernel UAPI header.
+
+## Fragment kill slot (2026-10-02)
+
+**Semantics (MEASURED on the M9148, traceable s = x patterns, 64² and 128²).**
+The GLSL kill slot of the `fs-discard-*` captures is
+`W0 = a[2:0]<<29 | 7f<<22 | 7f<<15 | 0x40<<8 | cls<<5 | 0x1c`,
+`W1 = 0xafdfc000 | aswz<<8 | a>>3`.  It kills where `(0 cls v)` holds for
+the scalar its a select picks (0 the first, 3 the second): cls 0 kills
+v > 0, 1 v <= 0, 2 v >= 0, 3 v < 0, 4 v == 0, 5 v != 0, all six checked
+with a 1.0/0.0 and with a signed operand.  It follows its operand and needs
+none of the predicate forms the vendor wraps around it (`fs-discard-cond`
+slots 3, 5 and 9); compare + kill is enough.  The fixed-function alpha kill
+(b operand, W1 `a3c0000f`) is a different instruction.  The vendor's
+`fs-discard-cond` program, injected unchanged with `M9X_FS_PROBE`, renders
+the right split on our stack.
+
+**Lane artifact (MEASURED, cause OPEN).**  With every kill form -- ours, the
+alpha-test template and the vendor's own program replayed -- up to three
+lanes of a 2x2 quad take the kill result of the quad two places earlier
+along the span; lane (x odd, y even) is never affected.  So the first pixels
+after a kill/keep transition are wrong (escapes at span starts, wrong kills
+just past a boundary): 60-160 pixels a 64² or 128² draw, a fixed count per
+program and geometry with varying positions.  The vendor's own
+`readback-rgba.bin` of `fs-discard-cond` and `fs-discard-all`
+(captures/m9x-vendor-glsl-programs-20260915) is exact, so some state differs.
+Ruled out, no change: r88 low bits, r89 `fe007ff8`, d7 `200068c0`,
+non-indexed draws, the transition block (`M9X_PASS_LOOP`), the BE knobs,
+FBO against window, small against tiled layout, a depth buffer, kill slot
+placement, ALU slots between compare and kill or after the kill,
+`hierarchical_z=N`, `async_submit=N` and display power.  Two kill slots make
+it worse.  Interpolation, a non-kill step colour and predicate-conditional
+output moves are exact.  What settles it: an MMIO snapshot of the engine and
+pixel-pipe configuration (`tools/m9x-mmio-snapshot.c`) taken while the vendor
+stack renders `fs-discard-cond` (the 2.6.30 image; nano cannot run it),
+diffed against our kernel's engine init.
+
+Because of it a shader that discards unconditionally skips its draws
+(exact: a discarded fragment updates nothing), and only conditional discards
+use the kill slot.
+
+**Do not write index `c7` mid-job.**  The vendor writes `c7 = 0x00003fc0`
+at the head of its jobs; emitting it in front of `88` in a raster range
+(allowed through `faa_probe_indices`) stalled the engine with a kernel
+stream timeout (2026-10-02, nano), which only a power cycle recovers.
+
+## Native vertex backend corrections (2026-10-02)
+
+The glsl-1.10 `vs-*` built-in failures were all the native vertex path
+(`M9X_NATIVE_VS=0` passed them), from three defects the offline simulator
+shared with the compiler:
+
+* **Partial dot (`op2 0x10`) subtracts a constant.**  Its c field is a
+  constant pair index: `d.s0 = b . k[e] - k[c].s0` (MEASURED: pair 3 as the
+  subtrahend in every dot/length/normalize/`vec * mat` probe, 0.25 in a
+  0.25 pair subtracts 0.25, a register index in c is wrong).  The vendor's
+  `c = 3` works only while its pair 3 holds zero; the backend names a zero
+  literal pair now.
+* **frcp/frsq/fsqrt/fdiv read component 0 in every lane**, so vector
+  reciprocals and divisors repeated the first component.  Each component
+  runs its own chain now (OFFLINE corpus `divide-vector`, `rsq-sqrt-vector`).
+* **Registers 0x11, 0x15, 0x17, 0x19, 0x1b, 0x1f read back wrong as
+  temporaries** (MEASURED by steering a reciprocal over the pool; 0x12, 0x14,
+  0x16, 0x18, 0x1a, 0x1c..0x1e, 0x20 are right; not a latency, padding does
+  not help; mechanism OPEN).  They left the pool, which is 23 registers;
+  `exp2-vector` and `glmark-buffer-wireframe` run out and fall back.
+
+`M9X_VS_DUMP=1` prints a hash line a compiled program (2 adds the words);
+the ioquake3 opengl2 programs that run natively and all 99 glamor corpus
+vertex programs compile to the same words as before.
+`m9-vs-compile-test` takes `M9_VS_EXTRA=<vs[---fs]>` for a single shader.

@@ -1,0 +1,183 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
+/*
+ * M9148 texture storage placement and texture-unit words, reproduced from the
+ * vendor GL 1.5 capture (xf86-video-parhelia docs/parhelia-m9-texture-storage.md
+ * and tools/m9-texture-layout-analyze.py).
+ */
+#ifndef M9_TEXTURE_H
+#define M9_TEXTURE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "pipe/p_state.h"
+#include "util/format/u_formats.h"
+
+#define M9_TEXTURE_MAX_LEVELS 13u
+#define M9_TEXTURE_MAX_UNITS 4u
+/* Application texture slots one job binds across all its raster passes: a
+ * split fragment shader binds up to four in each of its passes. */
+#define M9_DRAW_MAX_UNITS 32u
+/* Levels up to 16x16 share one 32x16 packed tail. */
+#define M9_TEXTURE_TAIL_EXTENT 16u
+/* Texel extent of that tail surface, which a compressed chain shares too. */
+#define M9_COMPRESSED_TAIL_WIDTH 32u
+#define M9_COMPRESSED_TAIL_HEIGHT 16u
+#define M9_TEXTURE_TAIL_BYTES 0x800u
+#define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
+/* Descriptor format code of the BGRA render-target family. */
+#define M9_TEXTURE_CODE_BGRA 0xccu
+/* FAA texture views: the RGBA8, RGBX8 and BGRA8 sampler codes, and the
+ * D3D address modes WRAP 1, CLAMP 3 and the GL CLAMP table entry 6. */
+static inline bool
+m9_faa_texture_code(unsigned code)
+{
+   return code == 0xc8 || code == 0xc9 || code == M9_TEXTURE_CODE_BGRA;
+}
+
+static inline bool
+m9_faa_texture_address(unsigned mode)
+{
+   return mode == 1 || mode == 3 || mode == 6;
+}
+
+/* S3TC descriptor bytes.  Three codes, not five: DXT2 decodes as DXT3 and
+ * DXT4 as DXT5 (docs/parhelia-m9-s3tc-compressed-textures.md 1). */
+#define M9_TEXTURE_CODE_DXT1 0x20u
+#define M9_TEXTURE_CODE_DXT3 0x2au
+#define M9_TEXTURE_CODE_DXT5 0x2eu
+
+/* DEPTH24 sampled as a texture (79[31:24], CAPTURED), and DEPTH16. */
+#define M9_TEXTURE_CODE_DEPTH24 0xfau
+#define M9_TEXTURE_CODE_DEPTH16 0xb8u
+
+/* 10-bit GigaColor descriptor bytes: the 7-bit code doubled (79[31:25]). */
+#define M9_TEXTURE_CODE_A2B10G10R10 0xd0u
+#define M9_TEXTURE_CODE_A2R10G10B10 0xd4u
+
+/* Descriptor 79[23:16]. */
+enum m9_texture_kind {
+   M9_TEXTURE_KIND_2D = 0x01,
+   M9_TEXTURE_KIND_CUBE = 0x09,
+   M9_TEXTURE_KIND_3D = 0x11,
+   M9_TEXTURE_KIND_1D = 0x18,
+   M9_TEXTURE_KIND_RENDER = 0x21,
+};
+
+struct m9_texture_format {
+   enum pipe_format storage;  /* 32-bit element bytes as stored */
+   uint8_t code;              /* descriptor 79[31:24] */
+};
+
+struct m9_texture_level {
+   uint64_t offset;           /* first face of the level */
+   uint64_t face_bytes;
+   uint32_t width, height, depth;
+   uint16_t tail_x, tail_y;
+   bool in_tail;
+   /* Placed by the local calculator (m9x474) instead of the aperture one. */
+   bool local;
+};
+
+struct m9_texture_layout {
+   enum m9_texture_kind kind;
+   unsigned levels, faces;
+   uint64_t size;
+   /* Bytes one 4x4 S3TC block occupies; 0 for an ordinary format.  A
+    * compressed level has no placement of its own -- the surface window
+    * places its blocks -- so `placed` stays clear for every level. */
+   uint8_t block_bytes;
+   /* Slice count the shared tail atlas is addressed with. */
+   uint32_t tail_depth;
+   /* Bit per level whose texels were verified to land on distinct addresses
+    * inside their allocation; other levels have no usable placement. */
+   uint32_t placed;
+   struct m9_texture_level level[M9_TEXTURE_MAX_LEVELS];
+};
+
+/* Resource and view facts that select the unit words. */
+struct m9_texture_bind {
+   uint8_t code;
+   enum m9_texture_kind kind;
+   uint32_t width, height, depth;
+   unsigned last_level;       /* resident levels above the base */
+   unsigned view_first_level; /* relative to the base */
+   unsigned view_last_level;  /* relative to the base */
+   bool srgb;                 /* the program decodes this unit's texels */
+};
+
+struct m9_texture_unit {
+   uint32_t handle;
+   uint32_t w70, w79, w7a, w7c, w7d, w7e, w7f, w80, w81;
+   bool placeholder;          /* unsampled unit-0 binding, 82..85 cleared */
+};
+
+/* Opt-in fragment textureLod: matching min/mag image filters and a finite,
+ * draw-constant LOD. The captured 7d bounds pin it relative to the live view.
+ * Sampler bias is applied once before clamping; derivatives do not contribute. */
+int m9_texture_unit_init_lod(struct m9_texture_unit *unit, uint32_t handle,
+                            const struct m9_texture_bind *bind,
+                            const struct pipe_sampler_state *sampler,
+                            float lod, float max_bias);
+
+bool m9_texture_format(enum pipe_format format, struct m9_texture_format *out);
+/* Descriptor code and block size of an S3TC format, false for every other. */
+bool m9_texture_compressed(enum pipe_format format, uint8_t *code,
+                           uint8_t *block_bytes);
+/* Bytes a compressed level of this extent needs.  MEASURED: below 128x128
+ * the bank swizzle spreads the blocks well past their own byte count
+ * (docs/parhelia-m9-s3tc-compressed-textures.md 12.2). */
+uint64_t m9_texture_compressed_bytes(uint32_t width, uint32_t height,
+                                     uint8_t block_bytes);
+/* Bytes one level of a compressed chain advances the next by.  MEASURED:
+ * the level's own block bytes over its 32-aligned span and its
+ * microtile-aligned height, with no object quantum. */
+uint64_t m9_texture_compressed_level_bytes(uint32_t width, uint32_t height,
+                                           uint8_t block_bytes);
+/* True where a compressed level takes the small 2-D storage kind. */
+bool m9_texture_compressed_small(uint32_t width, uint32_t height,
+                                 uint8_t block_bytes);
+int m9_texture_layout_compressed(struct m9_texture_layout *layout,
+                                 uint32_t width, uint32_t height,
+                                 unsigned levels, uint8_t block_bytes);
+/* Descriptor kind a Gallium target is stored and sampled as, 0 when the
+ * target has no captured texture storage. */
+enum m9_texture_kind m9_texture_kind_for_target(enum pipe_texture_target target);
+/* Every level of every face has a verified placement.  A cube face and a
+ * volume slice have no other way to reach their storage, so a layout that
+ * is not complete has to be refused rather than placed wrongly. */
+bool m9_texture_layout_complete(const struct m9_texture_layout *layout);
+/* Descriptor kind the sampler binds this storage with: a cube and a volume
+ * name themselves, a plane is the small 2-D kind up to 64 in both
+ * dimensions and the ordinary tiled kind above it. */
+enum m9_texture_kind m9_texture_bind_kind(const struct m9_texture_layout *layout,
+                                          uint32_t width, uint32_t height);
+int m9_texture_layout_init(struct m9_texture_layout *layout,
+                           enum m9_texture_kind kind, uint32_t width,
+                           uint32_t height, uint32_t depth, unsigned levels);
+bool m9_texture_level_placed(const struct m9_texture_layout *layout,
+                             unsigned level);
+int m9_texel_offset(const struct m9_texture_layout *layout, unsigned level,
+                    unsigned face, unsigned x, unsigned y, unsigned z,
+                    uint64_t *offset);
+/* box->z is the first slice of a volume and the first face of a cube, the
+ * way Gallium addresses a layer; `face` is the face the box starts at. */
+int m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
+                     uint64_t map_size, enum pipe_format storage,
+                     unsigned level, unsigned face, const struct pipe_box *box,
+                     enum pipe_format src_format, const uint8_t *src,
+                     unsigned src_stride);
+int m9_texture_fetch(const struct m9_texture_layout *layout,
+                     const uint8_t *map, uint64_t map_size,
+                     enum pipe_format storage, unsigned level, unsigned face,
+                     const struct pipe_box *box, enum pipe_format dst_format,
+                     uint8_t *dst, unsigned dst_stride);
+int m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
+                         const struct m9_texture_bind *bind,
+                         const struct pipe_sampler_state *sampler);
+/* Native fragment programs that sample nothing still bind unit 0: the vendor
+ * raster pass always carries a 1x1 BGRA texture there. */
+void m9_texture_unit_placeholder(struct m9_texture_unit *unit, uint32_t handle);
+
+#endif
